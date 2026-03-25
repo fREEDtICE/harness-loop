@@ -1,0 +1,79 @@
+[project]
+root_dir = ".."
+
+[storage]
+runs_dir = ".runs"
+
+[workspace]
+isolation = "git_worktree"
+
+[worker]
+kind = "codex_cli"
+
+[worker.codex]
+binary = "codex"
+model = "gpt-5.4"
+sandbox = "workspace-write"
+full_auto = true
+skip_git_repo_check = true
+resume_sessions = true
+
+# Optional planner-stage override.
+# Use this when you want a different planner worker than the builder/evaluator worker.
+# [worker.planner]
+# kind = "simulated"
+#
+# [worker.planner.simulation]
+# evaluator_statuses = ["pass"]
+# session_prefix = "planner-simulated"
+
+[prompts]
+planner = "prompts/planner.md"
+builder = "prompts/builder.md"
+evaluator = "prompts/evaluator.md"
+
+[schemas]
+planner_output = "schemas/planner-output.json"
+builder_handoff = "schemas/builder-handoff.json"
+qa_report = "schemas/qa-report.json"
+
+[runtime]
+feature_limit = 3
+max_repair_attempts = 2
+
+[runtime.supervision]
+enabled = true
+startup_timeout_secs = 60
+readiness_poll_interval_ms = 250
+shutdown_grace_period_secs = 5
+
+[[runtime.services]]
+name = "web"
+start = ["pnpm", "dev"]
+working_dir = "."
+ready_url = "http://127.0.0.1:3000/"
+
+# Optional command-driven runtime stack example.
+# Useful for repo-owned container or orchestrator flows.
+# [[runtime.stacks]]
+# name = "compose"
+# up = ["docker", "compose", "up", "-d"]
+# down = ["docker", "compose", "down", "--remove-orphans"]
+# working_dir = "."
+# ready_url = "http://127.0.0.1:3000/"
+
+[evaluator]
+dimensions = ["product_depth", "correctness", "ux", "operability"]
+require_screenshots = false
+commands = [
+  ["cargo", "test"],
+  ["pnpm", "test:e2e"]
+]
+
+# Enable screenshot gating only after you provide a repo-specific capture command.
+# The harness replaces `{output}` with the artifact path and also exports:
+# CODEX_HARNESS_SCREENSHOT_OUTPUT, CODEX_HARNESS_SCREENSHOT_DIR,
+# CODEX_HARNESS_SCREENSHOT_NAME, and CODEX_HARNESS_ATTEMPT.
+# [[evaluator.screenshots]]
+# name = "home"
+# command = ["pnpm", "exec", "playwright", "screenshot", "--output", "{output}", "http://127.0.0.1:3000/"]

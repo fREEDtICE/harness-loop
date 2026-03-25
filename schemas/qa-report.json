@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "QaReport",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "summary", "findings", "next_actions", "checks"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["pass", "fail", "inconclusive"]
+    },
+    "summary": { "type": "string" },
+    "findings": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "next_actions": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "command", "rationale"],
+        "properties": {
+          "name": { "type": "string" },
+          "command": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "rationale": { "type": "string" }
+        }
+      }
+    }
+  }
+}

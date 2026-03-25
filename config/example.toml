@@ -1,0 +1,78 @@
+[project]
+root_dir = ".."
+
+[storage]
+runs_dir = ".runs"
+
+[workspace]
+isolation = "direct"
+
+[worker]
+kind = "simulated"
+
+[worker.simulation]
+evaluator_statuses = ["pass"]
+session_prefix = "simulated"
+
+# Optional planner-stage override.
+# This is useful when you want real Codex planning but deterministic local build/evaluate stages.
+# [worker.planner]
+# kind = "codex_cli"
+#
+# [worker.planner.codex]
+# binary = "codex"
+# model = "gpt-5.4"
+# sandbox = "workspace-write"
+# full_auto = true
+# skip_git_repo_check = true
+# resume_sessions = true
+
+[prompts]
+planner = "prompts/planner.md"
+builder = "prompts/builder.md"
+evaluator = "prompts/evaluator.md"
+
+[schemas]
+planner_output = "schemas/planner-output.json"
+builder_handoff = "schemas/builder-handoff.json"
+qa_report = "schemas/qa-report.json"
+
+[runtime]
+feature_limit = 1
+max_repair_attempts = 1
+
+[runtime.supervision]
+enabled = false
+startup_timeout_secs = 30
+readiness_poll_interval_ms = 250
+shutdown_grace_period_secs = 5
+
+[[runtime.services]]
+name = "web"
+start = ["pnpm", "dev"]
+working_dir = "."
+ready_url = "http://127.0.0.1:3000/"
+
+# Optional command-driven runtime stack example.
+# Useful for tools like docker compose up -d / down.
+# [[runtime.stacks]]
+# name = "compose"
+# up = ["docker", "compose", "up", "-d"]
+# down = ["docker", "compose", "down", "--remove-orphans"]
+# working_dir = "."
+# ready_url = "http://127.0.0.1:3000/"
+
+[evaluator]
+dimensions = ["product_depth", "correctness", "ux", "operability"]
+require_screenshots = false
+commands = [
+  ["/usr/bin/env", "true"]
+]
+
+# Enable screenshot gating only after you provide a real capture command.
+# The harness replaces `{output}` with the artifact path and also exports:
+# CODEX_HARNESS_SCREENSHOT_OUTPUT, CODEX_HARNESS_SCREENSHOT_DIR,
+# CODEX_HARNESS_SCREENSHOT_NAME, and CODEX_HARNESS_ATTEMPT.
+# [[evaluator.screenshots]]
+# name = "home"
+# command = ["/bin/sh", "-c", "printf '\\211PNG\\r\\n\\032\\n' > \"$CODEX_HARNESS_SCREENSHOT_OUTPUT\""]

@@ -1,0 +1,1019 @@
+use std::{fs, path::Path};
+
+use anyhow::{Context, Result};
+use chrono::Utc;
+use uuid::Uuid;
+
+use crate::{
+    artifacts::{FeatureLayout, FileArtifactStore, RunLayout},
+    config::ResolvedConfig,
+    domain::{
+        FeatureContract, FeatureLifecycleStatus, FeaturePhase, FeatureRunState, PlanningRequest,
+        QaStatus, RunLifecycleStatus, RunRequest, RunStageRecord, RunState, WorkerStage,
+    },
+    evaluator::build_evaluation_request,
+    runtime::{RuntimePlan, RuntimeSupervisor, run_screenshot_commands, run_verification_commands},
+    worker::{WorkerAdapter, WorkerContext},
+    workspace::WorkspaceManager,
+};
+
+pub struct HarnessController<W> {
+    config: ResolvedConfig,
+    artifacts: FileArtifactStore,
+    worker: W,
+}
+
+impl<W> HarnessController<W>
+where
+    W: WorkerAdapter,
+{
+    pub fn new(config: ResolvedConfig, artifacts: FileArtifactStore, worker: W) -> Self {
+        Self {
+            config,
+            artifacts,
+            worker,
+        }
+    }
+
+    pub async fn start_run(&self, request: RunRequest) -> Result<RunState> {
+        let run_id = Uuid::new_v4();
+        let layout = self.artifacts.initialize(run_id)?;
+        let prepared_workspace = WorkspaceManager::prepare(
+            self.config.workspace.isolation,
+            &request.source_workspace,
+            &layout.root,
+        )?;
+
+        self.artifacts
+            .write_text(&layout.request_file, &request.user_request)?;
+
+        let runtime_plan = RuntimePlan::from_config(
+            &prepared_workspace.execution_workspace,
+            &self.config.runtime,
+        );
+        self.artifacts
+            .write_json(&layout.runtime_plan_file, &runtime_plan)?;
+
+        let now = Utc::now();
+        let mut state = RunState {
+            run_id,
+            created_at: now,
+            updated_at: now,
+            run_root: layout.root.clone(),
+            state_file: layout.state_file.clone(),
+            manifest_file: layout.manifest_file.clone(),
+            request_file: layout.request_file.clone(),
+            plan_file: layout.plan_file.clone(),
+            runtime_plan_file: layout.runtime_plan_file.clone(),
+            source_workspace: prepared_workspace.source_workspace,
+            execution_workspace: prepared_workspace.execution_workspace,
+            lifecycle: RunLifecycleStatus::Planning,
+            final_status: None,
+            current_feature_index: 0,
+            plan_stage: None,
+            features: Vec::new(),
+        };
+        self.checkpoint(&mut state)?;
+
+        self.ensure_plan(
+            &mut state,
+            &layout,
+            &runtime_plan,
+            &request.user_request,
+            request
+                .feature_limit
+                .unwrap_or(self.config.runtime.feature_limit)
+                .max(1),
+        )
+        .await?;
+
+        self.drive_run_with_runtime(&mut state, &layout, &runtime_plan)
+            .await?;
+        Ok(state)
+    }
+
+    pub async fn resume_run(&self, run_root: impl AsRef<Path>) -> Result<RunState> {
+        let run_root = run_root.as_ref();
+        let layout = self.layout_from_run_root(run_root);
+        let mut state: RunState =
+            self.artifacts
+                .read_json(&layout.state_file)
+                .with_context(|| {
+                    format!(
+                        "failed to load run state from {}",
+                        layout.state_file.display()
+                    )
+                })?;
+
+        if matches!(
+            state.lifecycle,
+            RunLifecycleStatus::Passed | RunLifecycleStatus::Failed
+        ) {
+            return Ok(state);
+        }
+
+        let runtime_plan: RuntimePlan = self
+            .artifacts
+            .read_json(&layout.runtime_plan_file)
+            .with_context(|| {
+                format!(
+                    "failed to load runtime plan from {}",
+                    layout.runtime_plan_file.display()
+                )
+            })?;
+        let request = fs::read_to_string(&layout.request_file)
+            .with_context(|| format!("failed to read {}", layout.request_file.display()))?;
+
+        if state.plan_stage.is_none() || state.features.is_empty() {
+            self.ensure_plan(
+                &mut state,
+                &layout,
+                &runtime_plan,
+                &request,
+                self.config.runtime.feature_limit.max(1),
+            )
+            .await?;
+        }
+
+        self.drive_run_with_runtime(&mut state, &layout, &runtime_plan)
+            .await?;
+        Ok(state)
+    }
+
+    pub fn inspect_run(&self, run_root: impl AsRef<Path>) -> Result<RunState> {
+        let run_root = run_root.as_ref();
+        let layout = self.layout_from_run_root(run_root);
+        self.artifacts
+            .read_json(&layout.state_file)
+            .with_context(|| {
+                format!(
+                    "failed to load run state from {}",
+                    layout.state_file.display()
+                )
+            })
+    }
+
+    async fn ensure_plan(
+        &self,
+        state: &mut RunState,
+        layout: &RunLayout,
+        runtime_plan: &RuntimePlan,
+        user_request: &str,
+        feature_limit: usize,
+    ) -> Result<()> {
+        if state.plan_stage.is_some() && !state.features.is_empty() {
+            return Ok(());
+        }
+
+        let worker_context = self.worker_context(
+            state.run_id,
+            state.execution_workspace.clone(),
+            layout.clone(),
+        );
+        let planning_request = PlanningRequest {
+            user_request: user_request.to_string(),
+            feature_limit,
+            service_names: runtime_plan
+                .services
+                .iter()
+                .map(|service| service.name.clone())
+                .collect(),
+            verification_commands: self.config.evaluator.commands.clone(),
+        };
+
+        let plan_artifacts = layout.stage_artifacts(WorkerStage::Plan, 1);
+        let plan_result = self
+            .worker
+            .plan(&worker_context, &plan_artifacts, &planning_request)
+            .await?;
+        self.artifacts
+            .write_json(&plan_artifacts.result_file, &plan_result)?;
+        state.plan_stage = Some(RunStageRecord {
+            stage: plan_result.stage,
+            attempt: plan_artifacts.attempt,
+            status: plan_result.status,
+            artifact: plan_artifacts.result_file.clone(),
+            session_id: plan_result.session_id.clone(),
+        });
+
+        let plan: crate::domain::PlanDocument = self
+            .artifacts
+            .read_json(&plan_artifacts.output_file)
+            .with_context(|| {
+                format!(
+                    "planner output at {} did not match the plan schema",
+                    plan_artifacts.output_file.display()
+                )
+            })?;
+        self.artifacts.write_json(&layout.plan_file, &plan)?;
+
+        state.features.clear();
+        for (index, feature) in plan.features.iter().enumerate() {
+            let feature_layout = layout.feature_layout(index, &feature.id)?;
+            let contract = FeatureContract::from_feature(feature, &self.config.evaluator.commands);
+            self.artifacts
+                .write_json(&feature_layout.contract_file, &contract)?;
+
+            state.features.push(FeatureRunState {
+                index,
+                feature_id: feature.id.clone(),
+                title: feature.title.clone(),
+                feature_root: feature_layout.root.clone(),
+                contract_file: feature_layout.contract_file.clone(),
+                builder_handoff_file: feature_layout.builder_handoff_file.clone(),
+                qa_report_file: feature_layout.qa_report_file.clone(),
+                status: FeatureLifecycleStatus::Pending,
+                phase: FeaturePhase::PendingBuild,
+                repair_attempts_used: 0,
+                next_evaluate_attempt: 1,
+                last_session_id: None,
+                last_qa_status: None,
+                stages: Vec::new(),
+            });
+        }
+
+        state.lifecycle = RunLifecycleStatus::Running;
+        self.checkpoint(state)
+    }
+
+    async fn drive_run(
+        &self,
+        state: &mut RunState,
+        layout: &RunLayout,
+        runtime_plan: &RuntimePlan,
+    ) -> Result<()> {
+        let worker_context = self.worker_context(
+            state.run_id,
+            state.execution_workspace.clone(),
+            layout.clone(),
+        );
+
+        while state.current_feature_index < state.features.len() {
+            let index = state.current_feature_index;
+            let feature_layout = self.feature_layout_from_state(&state.features[index]);
+            let contract = self
+                .artifacts
+                .read_json(&state.features[index].contract_file)
+                .with_context(|| {
+                    format!(
+                        "failed to load feature contract from {}",
+                        state.features[index].contract_file.display()
+                    )
+                })?;
+
+            match state.features[index].phase {
+                FeaturePhase::PendingBuild => {
+                    let build_artifacts = feature_layout.stage_artifacts(WorkerStage::Build, 1);
+                    let build_result = self
+                        .worker
+                        .build(
+                            &worker_context,
+                            &feature_layout,
+                            &build_artifacts,
+                            &contract,
+                        )
+                        .await?;
+                    self.artifacts
+                        .write_json(&build_artifacts.result_file, &build_result)?;
+                    state.features[index].stages.push(RunStageRecord {
+                        stage: build_result.stage,
+                        attempt: build_artifacts.attempt,
+                        status: build_result.status,
+                        artifact: build_artifacts.result_file.clone(),
+                        session_id: build_result.session_id.clone(),
+                    });
+
+                    let handoff: crate::domain::BuilderHandoff = self
+                        .artifacts
+                        .read_json(&build_artifacts.output_file)
+                        .with_context(|| {
+                            format!(
+                                "builder output at {} did not match the builder handoff schema",
+                                build_artifacts.output_file.display()
+                            )
+                        })?;
+                    self.artifacts
+                        .write_json(&state.features[index].builder_handoff_file, &handoff)?;
+
+                    state.features[index].status = FeatureLifecycleStatus::Running;
+                    state.features[index].phase = FeaturePhase::PendingEvaluate;
+                    state.features[index].last_session_id = build_result.session_id;
+                    self.checkpoint(state)?;
+                }
+                FeaturePhase::PendingEvaluate => {
+                    let handoff = self
+                        .artifacts
+                        .read_json(&state.features[index].builder_handoff_file)
+                        .with_context(|| {
+                            format!(
+                                "failed to load builder handoff from {}",
+                                state.features[index].builder_handoff_file.display()
+                            )
+                        })?;
+
+                    let attempt = state.features[index].next_evaluate_attempt;
+                    let verification_evidence = self.capture_verification_evidence(
+                        &feature_layout,
+                        attempt,
+                        &state.execution_workspace,
+                    )?;
+                    let screenshot_evidence = self.capture_screenshot_evidence(
+                        &feature_layout,
+                        attempt,
+                        &state.execution_workspace,
+                    )?;
+                    let evaluation_request = build_evaluation_request(
+                        &contract,
+                        &handoff,
+                        runtime_plan,
+                        &self.config.evaluator,
+                        verification_evidence,
+                        screenshot_evidence,
+                    );
+                    let evaluate_artifacts =
+                        feature_layout.stage_artifacts(WorkerStage::Evaluate, attempt);
+                    let evaluate_result = self
+                        .worker
+                        .evaluate(
+                            &worker_context,
+                            &feature_layout,
+                            &evaluate_artifacts,
+                            &evaluation_request,
+                        )
+                        .await?;
+                    self.artifacts
+                        .write_json(&evaluate_artifacts.result_file, &evaluate_result)?;
+                    state.features[index].stages.push(RunStageRecord {
+                        stage: evaluate_result.stage,
+                        attempt: evaluate_artifacts.attempt,
+                        status: evaluate_result.status,
+                        artifact: evaluate_artifacts.result_file.clone(),
+                        session_id: evaluate_result.session_id.clone(),
+                    });
+
+                    let mut qa_report: crate::domain::QaReport = self
+                        .artifacts
+                        .read_json(&evaluate_artifacts.output_file)
+                        .with_context(|| {
+                            format!(
+                                "evaluator output at {} did not match the QA schema",
+                                evaluate_artifacts.output_file.display()
+                            )
+                        })?;
+                    self.apply_verification_gate(
+                        &mut qa_report,
+                        &evaluation_request.verification_evidence,
+                    );
+                    self.apply_screenshot_gate(
+                        &mut qa_report,
+                        evaluation_request.screenshot_evidence.as_ref(),
+                        evaluation_request.require_screenshots,
+                    );
+                    self.artifacts
+                        .write_json(&state.features[index].qa_report_file, &qa_report)?;
+
+                    state.features[index].last_qa_status = Some(qa_report.status);
+                    if qa_report.status == QaStatus::Pass {
+                        state.features[index].status = FeatureLifecycleStatus::Passed;
+                        state.features[index].phase = FeaturePhase::Complete;
+                        state.current_feature_index += 1;
+                        state.final_status = Some(QaStatus::Pass);
+
+                        if state.current_feature_index == state.features.len() {
+                            state.lifecycle = RunLifecycleStatus::Passed;
+                        }
+
+                        self.checkpoint(state)?;
+                    } else if state.features[index].repair_attempts_used
+                        < self.config.runtime.max_repair_attempts
+                    {
+                        state.features[index].phase = FeaturePhase::PendingRepair;
+                        state.features[index].next_evaluate_attempt += 1;
+                        self.checkpoint(state)?;
+                    } else {
+                        state.features[index].status = FeatureLifecycleStatus::Failed;
+                        state.features[index].phase = FeaturePhase::Complete;
+                        state.lifecycle = RunLifecycleStatus::Failed;
+                        state.final_status = Some(qa_report.status);
+                        self.checkpoint(state)?;
+                        break;
+                    }
+                }
+                FeaturePhase::PendingRepair => {
+                    let handoff = self
+                        .artifacts
+                        .read_json(&state.features[index].builder_handoff_file)
+                        .with_context(|| {
+                            format!(
+                                "failed to load builder handoff from {}",
+                                state.features[index].builder_handoff_file.display()
+                            )
+                        })?;
+                    let qa_report = self
+                        .artifacts
+                        .read_json(&state.features[index].qa_report_file)
+                        .with_context(|| {
+                            format!(
+                                "failed to load qa report from {}",
+                                state.features[index].qa_report_file.display()
+                            )
+                        })?;
+
+                    let attempt = state.features[index].repair_attempts_used + 1;
+                    let repair_artifacts =
+                        feature_layout.stage_artifacts(WorkerStage::Repair, attempt);
+                    let repair_result = self
+                        .worker
+                        .repair(
+                            &worker_context,
+                            &feature_layout,
+                            &repair_artifacts,
+                            &contract,
+                            &handoff,
+                            &qa_report,
+                            state.features[index].last_session_id.as_deref(),
+                        )
+                        .await?;
+                    self.artifacts
+                        .write_json(&repair_artifacts.result_file, &repair_result)?;
+                    state.features[index].stages.push(RunStageRecord {
+                        stage: repair_result.stage,
+                        attempt: repair_artifacts.attempt,
+                        status: repair_result.status,
+                        artifact: repair_artifacts.result_file.clone(),
+                        session_id: repair_result.session_id.clone(),
+                    });
+
+                    let repaired_handoff: crate::domain::BuilderHandoff = self
+                        .artifacts
+                        .read_json(&repair_artifacts.output_file)
+                        .with_context(|| {
+                            format!(
+                                "repair output at {} did not match the builder handoff schema",
+                                repair_artifacts.output_file.display()
+                            )
+                        })?;
+                    self.artifacts.write_json(
+                        &state.features[index].builder_handoff_file,
+                        &repaired_handoff,
+                    )?;
+
+                    state.features[index].repair_attempts_used = attempt;
+                    state.features[index].phase = FeaturePhase::PendingEvaluate;
+                    if repair_result.session_id.is_some() {
+                        state.features[index].last_session_id = repair_result.session_id;
+                    }
+                    self.checkpoint(state)?;
+                }
+                FeaturePhase::Complete => {
+                    if state.features[index].status == FeatureLifecycleStatus::Passed {
+                        state.current_feature_index += 1;
+                        self.checkpoint(state)?;
+                    } else {
+                        state.lifecycle = RunLifecycleStatus::Failed;
+                        self.checkpoint(state)?;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if state.current_feature_index == state.features.len()
+            && state.lifecycle != RunLifecycleStatus::Failed
+        {
+            state.lifecycle = RunLifecycleStatus::Passed;
+            state.final_status = Some(QaStatus::Pass);
+            self.checkpoint(state)?;
+        }
+
+        Ok(())
+    }
+
+    async fn drive_run_with_runtime(
+        &self,
+        state: &mut RunState,
+        layout: &RunLayout,
+        runtime_plan: &RuntimePlan,
+    ) -> Result<()> {
+        let mut runtime_supervisor =
+            RuntimeSupervisor::start_if_enabled(&self.config.runtime, runtime_plan, &layout.root)
+                .await?;
+
+        let run_result = self.drive_run(state, layout, runtime_plan).await;
+        let shutdown_result = runtime_supervisor.shutdown().await;
+
+        match (run_result, shutdown_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(run_err), Ok(())) => Err(run_err),
+            (Ok(()), Err(shutdown_err)) => Err(shutdown_err),
+            (Err(run_err), Err(shutdown_err)) => {
+                Err(run_err.context(format!("runtime shutdown also failed: {shutdown_err:#}")))
+            }
+        }
+    }
+
+    fn checkpoint(&self, state: &mut RunState) -> Result<()> {
+        state.updated_at = Utc::now();
+        self.artifacts.write_json(&state.state_file, state)?;
+        self.artifacts.write_json(&state.manifest_file, state)
+    }
+
+    fn worker_context(
+        &self,
+        run_id: Uuid,
+        workspace: std::path::PathBuf,
+        layout: RunLayout,
+    ) -> WorkerContext {
+        WorkerContext {
+            run_id,
+            workspace,
+            layout,
+            planner_prompt: self.config.prompts.planner.clone(),
+            builder_prompt: self.config.prompts.builder.clone(),
+            evaluator_prompt: self.config.prompts.evaluator.clone(),
+            planner_schema: self.config.schemas.planner_output.clone(),
+            builder_schema: self.config.schemas.builder_handoff.clone(),
+            qa_schema: self.config.schemas.qa_report.clone(),
+        }
+    }
+
+    fn layout_from_run_root(&self, run_root: &Path) -> RunLayout {
+        RunLayout {
+            root: run_root.to_path_buf(),
+            request_file: run_root.join("request.md"),
+            plan_file: run_root.join("plan.json"),
+            runtime_plan_file: run_root.join("runtime-plan.json"),
+            state_file: run_root.join("run-state.json"),
+            manifest_file: run_root.join("manifest.json"),
+            features_dir: run_root.join("features"),
+            worker_dir: run_root.join("worker"),
+        }
+    }
+
+    fn feature_layout_from_state(&self, feature: &FeatureRunState) -> FeatureLayout {
+        FeatureLayout {
+            root: feature.feature_root.clone(),
+            contract_file: feature.contract_file.clone(),
+            builder_handoff_file: feature.builder_handoff_file.clone(),
+            qa_report_file: feature.qa_report_file.clone(),
+            runtime_dir: feature.feature_root.join("runtime"),
+            worker_dir: feature.feature_root.join("worker"),
+        }
+    }
+
+    fn capture_verification_evidence(
+        &self,
+        feature_layout: &FeatureLayout,
+        attempt: usize,
+        workspace: &Path,
+    ) -> Result<crate::domain::VerificationEvidence> {
+        let artifacts = feature_layout.verification_artifacts(attempt)?;
+        let evidence = run_verification_commands(
+            workspace,
+            &artifacts.root,
+            attempt,
+            &self.config.evaluator.commands,
+        )?;
+        self.artifacts
+            .write_json(&artifacts.report_file, &evidence)
+            .with_context(|| {
+                format!(
+                    "failed to write verification report {}",
+                    artifacts.report_file.display()
+                )
+            })?;
+        Ok(evidence)
+    }
+
+    fn capture_screenshot_evidence(
+        &self,
+        feature_layout: &FeatureLayout,
+        attempt: usize,
+        workspace: &Path,
+    ) -> Result<Option<crate::domain::ScreenshotEvidence>> {
+        if self.config.evaluator.screenshots.is_empty() {
+            return Ok(None);
+        }
+
+        let artifacts = feature_layout.screenshot_artifacts(attempt)?;
+        let evidence = run_screenshot_commands(
+            workspace,
+            &artifacts.root,
+            attempt,
+            &self.config.evaluator.screenshots,
+        )?;
+        self.artifacts
+            .write_json(&artifacts.report_file, &evidence)
+            .with_context(|| {
+                format!(
+                    "failed to write screenshot report {}",
+                    artifacts.report_file.display()
+                )
+            })?;
+        Ok(Some(evidence))
+    }
+
+    fn apply_verification_gate(
+        &self,
+        qa_report: &mut crate::domain::QaReport,
+        verification_evidence: &crate::domain::VerificationEvidence,
+    ) {
+        if verification_evidence.all_passed() {
+            return;
+        }
+
+        qa_report.status = QaStatus::Fail;
+        qa_report.findings.extend(
+            verification_evidence
+                .results
+                .iter()
+                .filter(|result| {
+                    !matches!(result.status, crate::domain::VerificationStatus::Passed)
+                })
+                .map(|result| {
+                    format!(
+                        "{} failed with exit code {:?}. stdout={} stderr={}",
+                        result.name,
+                        result.exit_code,
+                        result.stdout_log.display(),
+                        result.stderr_log.display()
+                    )
+                }),
+        );
+        qa_report.next_actions.push(
+            "Repair the failing verification commands before accepting this feature.".to_string(),
+        );
+        qa_report.summary = format!(
+            "{} Deterministic verification failed for evaluate attempt {}.",
+            qa_report.summary, verification_evidence.attempt
+        );
+    }
+
+    fn apply_screenshot_gate(
+        &self,
+        qa_report: &mut crate::domain::QaReport,
+        screenshot_evidence: Option<&crate::domain::ScreenshotEvidence>,
+        require_screenshots: bool,
+    ) {
+        if !require_screenshots {
+            return;
+        }
+
+        let Some(screenshot_evidence) = screenshot_evidence else {
+            qa_report.status = QaStatus::Fail;
+            qa_report.findings.push(
+                "Required screenshot capture was enabled, but no screenshot evidence was produced."
+                    .to_string(),
+            );
+            qa_report
+                .next_actions
+                .push("Configure required screenshot capture and rerun evaluation.".to_string());
+            qa_report.summary = format!(
+                "{} Required screenshot capture failed for evaluate attempt {}.",
+                qa_report.summary, 0
+            );
+            return;
+        };
+
+        if screenshot_evidence.all_captured() {
+            return;
+        }
+
+        qa_report.status = QaStatus::Fail;
+        qa_report.findings.extend(
+            screenshot_evidence
+                .results
+                .iter()
+                .filter(|result| {
+                    !matches!(result.status, crate::domain::ScreenshotStatus::Captured)
+                })
+                .map(|result| {
+                    format!(
+                        "{} screenshot capture failed with exit code {:?}. output={} stdout={} stderr={}",
+                        result.name,
+                        result.exit_code,
+                        result.output_file.display(),
+                        result.stdout_log.display(),
+                        result.stderr_log.display()
+                    )
+                }),
+        );
+        qa_report.next_actions.push(
+            "Repair the failing screenshot capture commands before accepting this feature."
+                .to_string(),
+        );
+        qa_report.summary = format!(
+            "{} Required screenshot capture failed for evaluate attempt {}.",
+            qa_report.summary, screenshot_evidence.attempt
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        sync::{Arc, Mutex},
+    };
+
+    use anyhow::Result;
+    use async_trait::async_trait;
+    use chrono::Utc;
+    use tempfile::tempdir;
+    use uuid::Uuid;
+
+    use crate::{
+        artifacts::{FeatureLayout, FileArtifactStore, StageArtifactSet},
+        config::{
+            CodexWorkerConfig, EvaluatorConfig, ResolvedConfig, ResolvedPromptConfig,
+            ResolvedSchemaConfig, ResolvedStorageConfig, RuntimeConfig, RuntimeSupervisionConfig,
+            ServiceConfig, SimulationWorkerConfig, WorkerConfig, WorkerKind, WorkspaceConfig,
+        },
+        domain::{
+            BuilderHandoff, EvaluationRequest, Feature, FeatureContract, FeatureLifecycleStatus,
+            PlanDocument, QaCheck, QaReport, QaStatus, RunLifecycleStatus, RunRequest,
+            RunStageRecord, RunState, WorkerResult, WorkerStage, WorkerStatus,
+        },
+        worker::{WorkerAdapter, WorkerContext},
+        workspace::WorkspaceIsolation,
+    };
+
+    use super::HarnessController;
+
+    #[derive(Default)]
+    struct FakeState {
+        evaluate_calls: usize,
+    }
+
+    struct FakeWorker {
+        state: Arc<Mutex<FakeState>>,
+    }
+
+    #[async_trait]
+    impl WorkerAdapter for FakeWorker {
+        async fn plan(
+            &self,
+            _context: &WorkerContext,
+            artifacts: &StageArtifactSet,
+            _request: &crate::domain::PlanningRequest,
+        ) -> Result<WorkerResult> {
+            let plan = PlanDocument {
+                goal: "goal".to_string(),
+                features: vec![
+                    Feature {
+                        id: "feature-001".to_string(),
+                        title: "one".to_string(),
+                        summary: "first".to_string(),
+                        acceptance_criteria: vec!["a".to_string()],
+                    },
+                    Feature {
+                        id: "feature-002".to_string(),
+                        title: "two".to_string(),
+                        summary: "second".to_string(),
+                        acceptance_criteria: vec!["b".to_string()],
+                    },
+                ],
+                risks: Vec::new(),
+                checkpoints: Vec::new(),
+            };
+            fs::write(&artifacts.output_file, serde_json::to_vec_pretty(&plan)?)?;
+
+            Ok(worker_result(artifacts, WorkerStage::Plan, None))
+        }
+
+        async fn build(
+            &self,
+            _context: &WorkerContext,
+            _feature: &FeatureLayout,
+            artifacts: &StageArtifactSet,
+            _contract: &FeatureContract,
+        ) -> Result<WorkerResult> {
+            let handoff = BuilderHandoff {
+                summary: "build".to_string(),
+                changed_files: Vec::new(),
+                verification: Vec::new(),
+                open_questions: Vec::new(),
+            };
+            fs::write(&artifacts.output_file, serde_json::to_vec_pretty(&handoff)?)?;
+            Ok(worker_result(
+                artifacts,
+                WorkerStage::Build,
+                Some("thread-build".to_string()),
+            ))
+        }
+
+        async fn evaluate(
+            &self,
+            _context: &WorkerContext,
+            _feature: &FeatureLayout,
+            artifacts: &StageArtifactSet,
+            _request: &EvaluationRequest,
+        ) -> Result<WorkerResult> {
+            let mut state = self.state.lock().expect("lock");
+            state.evaluate_calls += 1;
+            let status = if state.evaluate_calls == 1 {
+                QaStatus::Fail
+            } else {
+                QaStatus::Pass
+            };
+            let report = QaReport {
+                status,
+                summary: "qa".to_string(),
+                findings: Vec::new(),
+                next_actions: Vec::new(),
+                checks: vec![QaCheck {
+                    name: "check".to_string(),
+                    command: vec!["cargo".to_string(), "test".to_string()],
+                    rationale: "why".to_string(),
+                }],
+            };
+            fs::write(&artifacts.output_file, serde_json::to_vec_pretty(&report)?)?;
+            Ok(worker_result(artifacts, WorkerStage::Evaluate, None))
+        }
+
+        async fn repair(
+            &self,
+            _context: &WorkerContext,
+            _feature: &FeatureLayout,
+            artifacts: &StageArtifactSet,
+            _contract: &FeatureContract,
+            _builder_handoff: &BuilderHandoff,
+            _qa_report: &QaReport,
+            previous_session_id: Option<&str>,
+        ) -> Result<WorkerResult> {
+            let handoff = BuilderHandoff {
+                summary: format!("repair {previous_session_id:?}"),
+                changed_files: Vec::new(),
+                verification: Vec::new(),
+                open_questions: Vec::new(),
+            };
+            fs::write(&artifacts.output_file, serde_json::to_vec_pretty(&handoff)?)?;
+            Ok(worker_result(
+                artifacts,
+                WorkerStage::Repair,
+                Some("thread-repair".to_string()),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn controller_runs_multiple_features_and_records_state() -> Result<()> {
+        let temp = tempdir()?;
+        let source_workspace = temp.path().join("workspace");
+        fs::create_dir_all(&source_workspace)?;
+
+        let config = resolved_config(temp.path(), temp.path().join("runs"));
+        let artifacts = FileArtifactStore::new(config.storage.runs_dir.clone());
+        let worker = FakeWorker {
+            state: Arc::new(Mutex::new(FakeState::default())),
+        };
+        let controller = HarnessController::new(config, artifacts, worker);
+
+        let state = controller
+            .start_run(RunRequest {
+                user_request: "Build a harness".to_string(),
+                source_workspace,
+                feature_limit: Some(2),
+            })
+            .await?;
+
+        assert_eq!(state.lifecycle, RunLifecycleStatus::Passed);
+        assert_eq!(state.features.len(), 2);
+        assert!(
+            state
+                .features
+                .iter()
+                .all(|feature| feature.status == FeatureLifecycleStatus::Passed)
+        );
+        assert!(state.state_file.exists());
+
+        Ok(())
+    }
+
+    #[test]
+    fn inspect_reads_persisted_state() -> Result<()> {
+        let temp = tempdir()?;
+        let run_root = temp.path().join("run");
+        fs::create_dir_all(&run_root)?;
+        let config = resolved_config(temp.path(), temp.path().join("runs"));
+        let artifacts = FileArtifactStore::new(config.storage.runs_dir.clone());
+        let controller = HarnessController::new(
+            config,
+            artifacts,
+            FakeWorker {
+                state: Arc::new(Mutex::new(FakeState::default())),
+            },
+        );
+
+        let state = RunState {
+            run_id: Uuid::nil(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            run_root: run_root.clone(),
+            state_file: run_root.join("run-state.json"),
+            manifest_file: run_root.join("manifest.json"),
+            request_file: run_root.join("request.md"),
+            plan_file: run_root.join("plan.json"),
+            runtime_plan_file: run_root.join("runtime-plan.json"),
+            source_workspace: run_root.join("src"),
+            execution_workspace: run_root.join("src"),
+            lifecycle: RunLifecycleStatus::Running,
+            final_status: None,
+            current_feature_index: 0,
+            plan_stage: Some(RunStageRecord {
+                stage: WorkerStage::Plan,
+                attempt: 1,
+                status: WorkerStatus::Prepared,
+                artifact: run_root.join("worker/plan-01-result.json"),
+                session_id: None,
+            }),
+            features: Vec::new(),
+        };
+        fs::write(&state.state_file, serde_json::to_vec_pretty(&state)?)?;
+
+        let loaded = controller.inspect_run(&run_root)?;
+        assert_eq!(loaded.run_id, Uuid::nil());
+        assert_eq!(loaded.lifecycle, RunLifecycleStatus::Running);
+
+        Ok(())
+    }
+
+    fn worker_result(
+        artifacts: &StageArtifactSet,
+        stage: WorkerStage,
+        session_id: Option<String>,
+    ) -> WorkerResult {
+        WorkerResult {
+            stage,
+            status: WorkerStatus::Prepared,
+            command: vec!["fake".to_string()],
+            prompt_file: artifacts.prompt_file.clone(),
+            output_file: artifacts.output_file.clone(),
+            stdout_log: artifacts.stdout_log.clone(),
+            stderr_log: artifacts.stderr_log.clone(),
+            notes: Vec::new(),
+            session_id,
+        }
+    }
+
+    fn resolved_config(project_root: &Path, runs_dir: PathBuf) -> ResolvedConfig {
+        let prompts = project_root.join("prompts");
+        let schemas = project_root.join("schemas");
+        let _ = fs::create_dir_all(&prompts);
+        let _ = fs::create_dir_all(&schemas);
+
+        ResolvedConfig {
+            project_root: project_root.to_path_buf(),
+            storage: ResolvedStorageConfig { runs_dir },
+            workspace: WorkspaceConfig {
+                isolation: WorkspaceIsolation::Direct,
+            },
+            worker: WorkerConfig {
+                kind: WorkerKind::Simulated,
+                codex: Some(CodexWorkerConfig {
+                    binary: "codex".to_string(),
+                    model: "gpt-5.4".to_string(),
+                    sandbox: "workspace-write".to_string(),
+                    full_auto: true,
+                    skip_git_repo_check: true,
+                    resume_sessions: true,
+                }),
+                simulation: Some(SimulationWorkerConfig {
+                    evaluator_statuses: vec![QaStatus::Pass],
+                    session_prefix: "sim".to_string(),
+                }),
+                planner: None,
+            },
+            prompts: ResolvedPromptConfig {
+                planner: prompts.join("planner.md"),
+                builder: prompts.join("builder.md"),
+                evaluator: prompts.join("evaluator.md"),
+            },
+            schemas: ResolvedSchemaConfig {
+                planner_output: schemas.join("planner-output.json"),
+                builder_handoff: schemas.join("builder-handoff.json"),
+                qa_report: schemas.join("qa-report.json"),
+            },
+            runtime: RuntimeConfig {
+                feature_limit: 2,
+                max_repair_attempts: 1,
+                supervision: RuntimeSupervisionConfig::default(),
+                services: vec![ServiceConfig {
+                    name: "web".to_string(),
+                    start: vec!["pnpm".to_string(), "dev".to_string()],
+                    working_dir: None,
+                    ready_url: None,
+                    ready_command: None,
+                }],
+                stacks: Vec::new(),
+            },
+            evaluator: EvaluatorConfig {
+                dimensions: vec!["correctness".to_string()],
+                require_screenshots: false,
+                commands: vec![vec!["/usr/bin/env".to_string(), "true".to_string()]],
+                screenshots: Vec::new(),
+            },
+        }
+    }
+}
