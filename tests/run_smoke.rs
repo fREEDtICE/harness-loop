@@ -141,8 +141,7 @@ fn simulated_cli_inconclusive_evaluation_triggers_a_repair_cycle() -> Result<(),
     run.assert_cli_field("final_status", "pass")?;
     run.assert_feature_state(0, "feature-001", "passed", "complete", 1, "pass")?;
     assert_eq!(
-        run.read_json("features/01-feature-001/worker/outputs/evaluate-01-last-message.json")?
-            ["status"],
+        run.read_json("features/01-feature-001/worker/outputs/evaluate-01-last-message.json")?["status"],
         "inconclusive"
     );
     run.assert_stage_line(
@@ -385,7 +384,8 @@ fn simulated_cli_resume_replans_when_plan_stage_is_missing() -> Result<(), Box<d
     resumed.assert_cli_field("lifecycle", "passed")?;
     resumed.assert_cli_field("final_status", "pass")?;
     resumed.assert_feature_state(0, "feature-001", "passed", "complete", 0, "pass")?;
-    resumed.assert_stage_line("stage=plan attempt=1 status=prepared session_id=simulated-plan-01")?;
+    resumed
+        .assert_stage_line("stage=plan attempt=1 status=prepared session_id=simulated-plan-01")?;
 
     Ok(())
 }
@@ -446,6 +446,100 @@ fn simulated_cli_git_worktree_run_fails_for_a_non_git_workspace() -> Result<(), 
         &output,
         "failed to locate git repository root for worktree isolation",
     )?;
+
+    Ok(())
+}
+
+#[test]
+fn simulated_cli_git_worktree_journey_bootstraps_a_repo_without_head() -> Result<(), Box<dyn Error>>
+{
+    let fixture = SmokeFixture::new_with_options(SmokeFixtureOptions {
+        worker_mode: WorkerMode::Simulated {
+            evaluator_statuses: vec!["pass"],
+        },
+        planner_worker_mode: None,
+        max_repair_attempts: 1,
+        require_screenshots: false,
+        screenshot_commands: Vec::new(),
+        verification_commands: vec![vec!["/usr/bin/env", "true"]],
+        workspace_isolation: "git_worktree",
+        initialize_git_repo: false,
+        runtime_supervision: RuntimeSupervisionOptions::default(),
+        services: vec![default_service()],
+        stacks: Vec::new(),
+    })?;
+    fs::write(fixture.workspace_dir.join("README.md"), "workspace\n")?;
+    run_ok(
+        Command::new("git").arg("init").arg(&fixture.workspace_dir),
+        "git init fixture workspace without head",
+    )?;
+
+    let output = fixture.run(
+        "Run the harness in an isolated workspace before the first commit.\n",
+        None,
+    )?;
+    fixture.assert_success(&output)?;
+
+    let run = fixture.parse_run(&output)?;
+    run.assert_root_layout()?;
+    run.assert_cli_field("lifecycle", "passed")?;
+    run.assert_source_workspace(&fixture.workspace_dir)?;
+    run.assert_execution_workspace_isolated_from(&fixture.workspace_dir)?;
+    run.assert_exists("workspace/README.md");
+
+    Ok(())
+}
+
+#[test]
+fn simulated_cli_git_worktree_journey_bootstraps_a_repo_without_head_when_runs_dir_is_inside_workspace()
+-> Result<(), Box<dyn Error>> {
+    let mut fixture = SmokeFixture::new_with_options(SmokeFixtureOptions {
+        worker_mode: WorkerMode::Simulated {
+            evaluator_statuses: vec!["pass"],
+        },
+        planner_worker_mode: None,
+        max_repair_attempts: 1,
+        require_screenshots: false,
+        screenshot_commands: Vec::new(),
+        verification_commands: vec![vec!["/usr/bin/env", "true"]],
+        workspace_isolation: "git_worktree",
+        initialize_git_repo: false,
+        runtime_supervision: RuntimeSupervisionOptions::default(),
+        services: vec![default_service()],
+        stacks: Vec::new(),
+    })?;
+    fs::write(
+        &fixture.config_path,
+        fs::read_to_string(&fixture.config_path)?.replace(
+            "runs_dir = \"runs\"",
+            "runs_dir = \"workspace/.harness-runs\"",
+        ),
+    )?;
+    fixture.runs_dir = fixture.workspace_dir.join(".harness-runs");
+    fs::write(fixture.workspace_dir.join("README.md"), "workspace\n")?;
+    run_ok(
+        Command::new("git").arg("init").arg(&fixture.workspace_dir),
+        "git init fixture workspace without head",
+    )?;
+
+    let output = fixture.run(
+        "Run the harness when run artifacts live under the source workspace.\n",
+        None,
+    )?;
+    fixture.assert_success(&output)?;
+
+    let run = fixture.parse_run(&output)?;
+    run.assert_root_layout()?;
+    run.assert_cli_field("lifecycle", "passed")?;
+    run.assert_source_workspace(&fixture.workspace_dir)?;
+    run.assert_execution_workspace_isolated_from(&fixture.workspace_dir)?;
+    run.assert_exists("workspace/README.md");
+    assert!(
+        !run.run_root
+            .join("workspace")
+            .join(".harness-runs")
+            .exists()
+    );
 
     Ok(())
 }
@@ -1168,6 +1262,18 @@ fn fake_codex_cli_repair_path_exercises_real_worker_selection_and_resume_command
     let repair_command = json_string_array(&repair_result["command"]);
     assert!(repair_command.contains(&"resume".to_string()));
     assert!(repair_command.contains(&"fake-build-01".to_string()));
+    let cd_index = repair_command
+        .iter()
+        .position(|arg| arg == "-C")
+        .expect("repair command should include -C");
+    let resume_index = repair_command
+        .iter()
+        .position(|arg| arg == "resume")
+        .expect("repair command should include resume");
+    assert!(
+        cd_index < resume_index,
+        "expected -C before resume: {repair_command:?}"
+    );
     run.assert_stage_line(
         "stage=feature:feature-001 stage=repair attempt=1 status=executed session_id=fake-repair-01",
     )?;
@@ -1176,8 +1282,8 @@ fn fake_codex_cli_repair_path_exercises_real_worker_selection_and_resume_command
 }
 
 #[test]
-fn fake_codex_cli_repair_uses_exec_when_resume_sessions_are_disabled()
--> Result<(), Box<dyn Error>> {
+fn fake_codex_cli_repair_uses_exec_when_resume_sessions_are_disabled() -> Result<(), Box<dyn Error>>
+{
     let fixture = SmokeFixture::new_with_options(SmokeFixtureOptions {
         worker_mode: WorkerMode::CodexCliFake {
             scenario: fake_codex_repair_pass_scenario(),
@@ -1193,10 +1299,14 @@ fn fake_codex_cli_repair_uses_exec_when_resume_sessions_are_disabled()
         services: vec![default_service()],
         stacks: Vec::new(),
     })?;
-    fixture
-        .rewrite_config(|config| config.replace("resume_sessions = true", "resume_sessions = false"))?;
+    fixture.rewrite_config(|config| {
+        config.replace("resume_sessions = true", "resume_sessions = false")
+    })?;
 
-    let output = fixture.run("Exercise codex repair without session resume support.\n", None)?;
+    let output = fixture.run(
+        "Exercise codex repair without session resume support.\n",
+        None,
+    )?;
     fixture.assert_success(&output)?;
 
     let run = fixture.parse_run(&output)?;
@@ -1346,6 +1456,9 @@ fn fake_codex_cli_run_fails_when_worker_process_exits_non_zero() -> Result<(), B
 
     let output = fixture.run("Fail when the codex worker process exits non-zero.\n", None)?;
     fixture.assert_failure_contains(&output, "codex stage plan failed with status")?;
+    fixture.assert_failure_contains(&output, "stdout_log:")?;
+    fixture.assert_failure_contains(&output, "stderr_log:")?;
+    fixture.assert_failure_contains(&output, "stderr_excerpt:")?;
 
     let run_root = fixture.single_run_root()?;
     assert!(run_root.join("worker/prompts/plan-01.md").exists());

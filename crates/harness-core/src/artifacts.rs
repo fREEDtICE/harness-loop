@@ -17,6 +17,12 @@ pub struct FileArtifactStore {
 #[derive(Debug, Clone, Serialize)]
 pub struct RunLayout {
     pub root: PathBuf,
+    pub inputs_dir: PathBuf,
+    pub prompt_inputs_dir: PathBuf,
+    pub planner_prompt_file: PathBuf,
+    pub builder_prompt_file: PathBuf,
+    pub evaluator_prompt_file: PathBuf,
+    pub launch_file: PathBuf,
     pub request_file: PathBuf,
     pub plan_file: PathBuf,
     pub runtime_plan_file: PathBuf,
@@ -68,6 +74,8 @@ impl FileArtifactStore {
 
     pub fn initialize(&self, run_id: Uuid) -> Result<RunLayout> {
         let root = self.base_dir.join(run_id.to_string());
+        let inputs_dir = root.join("inputs");
+        let prompt_inputs_dir = inputs_dir.join("prompts");
         let features_dir = root.join("features");
         let worker_dir = root.join("worker");
         let logs_dir = worker_dir.join("logs");
@@ -76,6 +84,8 @@ impl FileArtifactStore {
 
         for dir in [
             &root,
+            &inputs_dir,
+            &prompt_inputs_dir,
             &features_dir,
             &worker_dir,
             &logs_dir,
@@ -87,6 +97,12 @@ impl FileArtifactStore {
         }
 
         Ok(RunLayout {
+            inputs_dir: inputs_dir.clone(),
+            prompt_inputs_dir: prompt_inputs_dir.clone(),
+            planner_prompt_file: prompt_inputs_dir.join("planner.md"),
+            builder_prompt_file: prompt_inputs_dir.join("builder.md"),
+            evaluator_prompt_file: prompt_inputs_dir.join("evaluator.md"),
+            launch_file: root.join("launch.json"),
             request_file: root.join("request.md"),
             plan_file: root.join("plan.json"),
             runtime_plan_file: root.join("runtime-plan.json"),

@@ -1,4 +1,4 @@
-use std::{fs, path::Path, process::Stdio};
+use std::{fmt::Write as _, fs, path::Path, process::Stdio};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -15,6 +15,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
+use tracing::info;
 
 pub struct CodexCliWorker {
     config: CodexWorkerConfig,
@@ -72,6 +73,13 @@ impl CodexCliWorker {
             .with_context(|| format!("failed to write {}", artifacts.prompt_file.display()))?;
 
         if let Some(session_id) = previous_session_id.filter(|_| self.config.resume_sessions) {
+            info!(
+                stage = artifacts.stage.as_str(),
+                attempt = artifacts.attempt,
+                session_id,
+                workspace = %context.workspace.display(),
+                "resuming codex worker stage from prior session"
+            );
             let command =
                 self.resume_command_for_stage(context, session_id, &artifacts.output_file);
             let mut result = self
@@ -97,6 +105,18 @@ impl CodexCliWorker {
         prompt: &str,
         stage: WorkerStage,
     ) -> Result<WorkerResult> {
+        let rendered_command = render_command(&command);
+        info!(
+            stage = stage.as_str(),
+            attempt = artifacts.attempt,
+            command = %rendered_command,
+            prompt_file = %artifacts.prompt_file.display(),
+            output_file = %artifacts.output_file.display(),
+            stdout_log = %artifacts.stdout_log.display(),
+            stderr_log = %artifacts.stderr_log.display(),
+            "starting codex worker stage"
+        );
+
         let mut process = Command::new(&self.config.binary);
         process
             .args(command.iter().skip(1))
@@ -128,11 +148,27 @@ impl CodexCliWorker {
         fs::write(&artifacts.stderr_log, &output.stderr)
             .with_context(|| format!("failed to write {}", artifacts.stderr_log.display()))?;
 
+        let session_id = extract_session_id(&output.stdout);
+        info!(
+            stage = stage.as_str(),
+            attempt = artifacts.attempt,
+            status = %output.status,
+            session_id = session_id.as_deref().unwrap_or("-"),
+            "completed codex worker stage"
+        );
+
         if !output.status.success() {
             anyhow::bail!(
-                "codex stage {} failed with status {}",
-                stage.as_str(),
-                output.status
+                "{}",
+                format_stage_failure(
+                    stage,
+                    &output.status,
+                    &command,
+                    artifacts,
+                    &output.stdout,
+                    &output.stderr,
+                    session_id.as_deref(),
+                )
             );
         }
 
@@ -145,7 +181,7 @@ impl CodexCliWorker {
             stdout_log: artifacts.stdout_log.clone(),
             stderr_log: artifacts.stderr_log.clone(),
             notes: vec!["Execution completed.".to_string()],
-            session_id: extract_session_id(&output.stdout),
+            session_id,
         })
     }
 
@@ -199,10 +235,10 @@ impl CodexCliWorker {
             "-a".to_string(),
             "never".to_string(),
             "exec".to_string(),
-            "resume".to_string(),
-            "--json".to_string(),
             "-C".to_string(),
             context.workspace.display().to_string(),
+            "resume".to_string(),
+            "--json".to_string(),
             "-m".to_string(),
             self.config.model.clone(),
         ];
@@ -335,9 +371,102 @@ fn extract_session_id(stdout: &[u8]) -> Option<String> {
     })
 }
 
+fn format_stage_failure(
+    stage: WorkerStage,
+    status: &std::process::ExitStatus,
+    command: &[String],
+    artifacts: &StageArtifactSet,
+    stdout: &[u8],
+    stderr: &[u8],
+    session_id: Option<&str>,
+) -> String {
+    let mut message = format!(
+        "codex stage {} failed with status {}",
+        stage.as_str(),
+        status
+    );
+    let _ = write!(
+        message,
+        "\ncommand: {}\
+\nprompt_file: {}\
+\noutput_file: {}\
+\nstdout_log: {}\
+\nstderr_log: {}",
+        render_command(command),
+        artifacts.prompt_file.display(),
+        artifacts.output_file.display(),
+        artifacts.stdout_log.display(),
+        artifacts.stderr_log.display(),
+    );
+
+    if let Some(session_id) = session_id {
+        let _ = write!(message, "\nsession_id: {session_id}");
+    }
+
+    let _ = write!(
+        message,
+        "\nstdout_excerpt:\n{}\nstderr_excerpt:\n{}",
+        render_output_excerpt(stdout),
+        render_output_excerpt(stderr),
+    );
+    message
+}
+
+fn render_command(command: &[String]) -> String {
+    command
+        .iter()
+        .map(|arg| shell_quote(arg))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn shell_quote(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_string();
+    }
+
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-' | ':' | '='))
+    {
+        return value.to_string();
+    }
+
+    format!("'{}'", value.replace('\'', r"'\''"))
+}
+
+fn render_output_excerpt(output: &[u8]) -> String {
+    let text = String::from_utf8_lossy(output);
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return "-".to_string();
+    }
+
+    let lines = trimmed.lines().collect::<Vec<_>>();
+    let start = lines.len().saturating_sub(20);
+    let excerpt = lines[start..].join("\n");
+    truncate_start(&excerpt, 4_000)
+}
+
+fn truncate_start(value: &str, max_chars: usize) -> String {
+    let total = value.chars().count();
+    if total <= max_chars {
+        return value.to_string();
+    }
+
+    let start = total.saturating_sub(max_chars);
+    let truncated = value.chars().skip(start).collect::<String>();
+    format!("...\n{truncated}")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::extract_session_id;
+    use std::path::{Path, PathBuf};
+
+    use harness_core::{artifacts::RunLayout, config::CodexWorkerConfig, worker::WorkerContext};
+    use uuid::Uuid;
+
+    use super::{CodexCliWorker, extract_session_id, render_output_excerpt};
 
     #[test]
     fn extract_session_id_from_jsonl_stdout() {
@@ -350,5 +479,68 @@ mod tests {
             extract_session_id(stdout).as_deref(),
             Some("019d232e-675d-7131-9783-da5c3cee4e1f")
         );
+    }
+
+    #[test]
+    fn resume_command_places_exec_cd_before_resume_subcommand() {
+        let worker = CodexCliWorker::new(CodexWorkerConfig {
+            binary: "codex".to_string(),
+            model: "gpt-5.4".to_string(),
+            sandbox: "workspace-write".to_string(),
+            full_auto: true,
+            skip_git_repo_check: true,
+            resume_sessions: true,
+        });
+        let context = WorkerContext {
+            run_id: Uuid::nil(),
+            workspace: PathBuf::from("/tmp/workspace"),
+            layout: RunLayout {
+                root: PathBuf::from("/tmp/run"),
+                inputs_dir: PathBuf::from("/tmp/run/inputs"),
+                prompt_inputs_dir: PathBuf::from("/tmp/run/inputs/prompts"),
+                planner_prompt_file: PathBuf::from("/tmp/run/inputs/prompts/planner.md"),
+                builder_prompt_file: PathBuf::from("/tmp/run/inputs/prompts/builder.md"),
+                evaluator_prompt_file: PathBuf::from("/tmp/run/inputs/prompts/evaluator.md"),
+                launch_file: PathBuf::from("/tmp/run/launch.json"),
+                request_file: PathBuf::from("/tmp/run/request.md"),
+                plan_file: PathBuf::from("/tmp/run/plan.json"),
+                runtime_plan_file: PathBuf::from("/tmp/run/runtime-plan.json"),
+                state_file: PathBuf::from("/tmp/run/run-state.json"),
+                manifest_file: PathBuf::from("/tmp/run/manifest.json"),
+                features_dir: PathBuf::from("/tmp/run/features"),
+                worker_dir: PathBuf::from("/tmp/run/worker"),
+            },
+            planner_prompt: PathBuf::from("/tmp/prompts/planner.md"),
+            builder_prompt: PathBuf::from("/tmp/prompts/builder.md"),
+            evaluator_prompt: PathBuf::from("/tmp/prompts/evaluator.md"),
+            planner_schema: PathBuf::from("/tmp/schemas/plan.json"),
+            builder_schema: PathBuf::from("/tmp/schemas/build.json"),
+            qa_schema: PathBuf::from("/tmp/schemas/qa.json"),
+        };
+
+        let command = worker.resume_command_for_stage(
+            &context,
+            "session-123",
+            Path::new("/tmp/run/worker/outputs/repair-01-last-message.json"),
+        );
+        let cd_index = command.iter().position(|arg| arg == "-C").unwrap();
+        let resume_index = command.iter().position(|arg| arg == "resume").unwrap();
+
+        assert!(cd_index < resume_index);
+        assert_eq!(command[cd_index + 1], "/tmp/workspace");
+    }
+
+    #[test]
+    fn render_output_excerpt_keeps_tail_for_debugging() {
+        let output = (0..30)
+            .map(|index| format!("line-{index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let excerpt = render_output_excerpt(output.as_bytes());
+
+        assert!(!excerpt.contains("line-0"));
+        assert!(excerpt.contains("line-29"));
+        assert!(excerpt.contains("line-10"));
     }
 }

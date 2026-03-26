@@ -9,6 +9,39 @@ pub struct RunRequest {
     pub user_request: String,
     pub source_workspace: PathBuf,
     pub feature_limit: Option<usize>,
+    #[serde(default)]
+    pub selected_config: Option<PathBuf>,
+    #[serde(default)]
+    pub prompt_overrides: PromptOverrides,
+}
+
+/// Optional per-run prompt overrides supplied by the launcher UI.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct PromptOverrides {
+    pub planner: Option<String>,
+    pub builder: Option<String>,
+    pub evaluator: Option<String>,
+}
+
+/// Effective prompt texts snapshotted into a run at launch time.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PromptSnapshot {
+    pub planner: String,
+    pub builder: String,
+    pub evaluator: String,
+}
+
+/// Durable launch inputs for a single run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunLaunchSnapshot {
+    pub source_workspace: PathBuf,
+    pub selected_config: Option<PathBuf>,
+    pub config_contents: Option<String>,
+    pub requested_feature_limit: Option<usize>,
+    pub effective_feature_limit: usize,
+    pub user_request: String,
+    pub prompts: PromptSnapshot,
+    pub launched_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -302,6 +335,16 @@ pub struct RunStageRecord {
     pub session_id: Option<String>,
 }
 
+/// The stage currently executing when the harness checkpoints mid-run.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ActiveRunStage {
+    pub stage: WorkerStage,
+    pub attempt: usize,
+    pub feature_index: Option<usize>,
+    pub feature_id: Option<String>,
+    pub started_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeatureRunState {
     pub index: usize,
@@ -328,6 +371,8 @@ pub struct RunState {
     pub run_root: PathBuf,
     pub state_file: PathBuf,
     pub manifest_file: PathBuf,
+    #[serde(default)]
+    pub launch_file: Option<PathBuf>,
     pub request_file: PathBuf,
     pub plan_file: PathBuf,
     pub runtime_plan_file: PathBuf,
@@ -336,6 +381,8 @@ pub struct RunState {
     pub lifecycle: RunLifecycleStatus,
     pub final_status: Option<QaStatus>,
     pub current_feature_index: usize,
+    #[serde(default)]
+    pub active_stage: Option<ActiveRunStage>,
     pub plan_stage: Option<RunStageRecord>,
     pub features: Vec<FeatureRunState>,
 }

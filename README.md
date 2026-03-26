@@ -168,7 +168,7 @@ If a supervised service fails to become ready, the run fails before feature exec
 The current scaffold is covered by:
 
 - unit tests for config resolution, controller state, workspace isolation, service supervision, and verification execution
-- binary smoke tests for happy path, repair path, repair-budget exhaustion, multi-feature backlog execution, `inspect`, `resume`, and deterministic verification failure gating
+- binary smoke tests for happy path, repair path, repair-budget exhaustion, multi-feature backlog execution, `inspect`, `resume`, deterministic verification failure gating, and git-worktree bootstrap paths before the first commit even when run artifacts live under the workspace
 - live Codex E2E coverage for both the full run loop and planner-only routing when the local environment is Codex-ready
 
 Run the user-journey suite with:

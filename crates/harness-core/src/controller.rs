@@ -2,14 +2,16 @@ use std::{fs, path::Path};
 
 use anyhow::{Context, Result};
 use chrono::Utc;
+use tracing::info;
 use uuid::Uuid;
 
 use crate::{
     artifacts::{FeatureLayout, FileArtifactStore, RunLayout},
     config::ResolvedConfig,
     domain::{
-        FeatureContract, FeatureLifecycleStatus, FeaturePhase, FeatureRunState, PlanningRequest,
-        QaStatus, RunLifecycleStatus, RunRequest, RunStageRecord, RunState, WorkerStage,
+        ActiveRunStage, FeatureContract, FeatureLifecycleStatus, FeaturePhase, FeatureRunState,
+        PlanningRequest, PromptSnapshot, QaStatus, RunLaunchSnapshot, RunLifecycleStatus,
+        RunRequest, RunStageRecord, RunState, WorkerStage,
     },
     evaluator::build_evaluation_request,
     runtime::{RuntimePlan, RuntimeSupervisor, run_screenshot_commands, run_verification_commands},
@@ -38,6 +40,12 @@ where
     pub async fn start_run(&self, request: RunRequest) -> Result<RunState> {
         let run_id = Uuid::new_v4();
         let layout = self.artifacts.initialize(run_id)?;
+        info!(
+            %run_id,
+            run_root = %layout.root.display(),
+            source_workspace = %request.source_workspace.display(),
+            "starting harness run"
+        );
         let prepared_workspace = WorkspaceManager::prepare(
             self.config.workspace.isolation,
             &request.source_workspace,
@@ -53,8 +61,27 @@ where
         );
         self.artifacts
             .write_json(&layout.runtime_plan_file, &runtime_plan)?;
+        let effective_feature_limit = request
+            .feature_limit
+            .unwrap_or(self.config.runtime.feature_limit)
+            .max(1);
 
         let now = Utc::now();
+        let launch_snapshot = self.build_launch_snapshot(&request, now, effective_feature_limit)?;
+        self.artifacts
+            .write_json(&layout.launch_file, &launch_snapshot)?;
+        self.artifacts.write_text(
+            &layout.planner_prompt_file,
+            &launch_snapshot.prompts.planner,
+        )?;
+        self.artifacts.write_text(
+            &layout.builder_prompt_file,
+            &launch_snapshot.prompts.builder,
+        )?;
+        self.artifacts.write_text(
+            &layout.evaluator_prompt_file,
+            &launch_snapshot.prompts.evaluator,
+        )?;
         let mut state = RunState {
             run_id,
             created_at: now,
@@ -62,6 +89,7 @@ where
             run_root: layout.root.clone(),
             state_file: layout.state_file.clone(),
             manifest_file: layout.manifest_file.clone(),
+            launch_file: Some(layout.launch_file.clone()),
             request_file: layout.request_file.clone(),
             plan_file: layout.plan_file.clone(),
             runtime_plan_file: layout.runtime_plan_file.clone(),
@@ -70,6 +98,7 @@ where
             lifecycle: RunLifecycleStatus::Planning,
             final_status: None,
             current_feature_index: 0,
+            active_stage: None,
             plan_stage: None,
             features: Vec::new(),
         };
@@ -80,10 +109,7 @@ where
             &layout,
             &runtime_plan,
             &request.user_request,
-            request
-                .feature_limit
-                .unwrap_or(self.config.runtime.feature_limit)
-                .max(1),
+            effective_feature_limit,
         )
         .await?;
 
@@ -182,12 +208,21 @@ where
         };
 
         let plan_artifacts = layout.stage_artifacts(WorkerStage::Plan, 1);
+        self.begin_stage(state, WorkerStage::Plan, plan_artifacts.attempt, None, None)?;
+        info!(
+            run_id = %state.run_id,
+            attempt = plan_artifacts.attempt,
+            workspace = %state.execution_workspace.display(),
+            feature_limit,
+            "starting plan stage"
+        );
         let plan_result = self
             .worker
             .plan(&worker_context, &plan_artifacts, &planning_request)
             .await?;
         self.artifacts
             .write_json(&plan_artifacts.result_file, &plan_result)?;
+        state.active_stage = None;
         state.plan_stage = Some(RunStageRecord {
             stage: plan_result.stage,
             attempt: plan_artifacts.attempt,
@@ -233,6 +268,11 @@ where
         }
 
         state.lifecycle = RunLifecycleStatus::Running;
+        info!(
+            run_id = %state.run_id,
+            feature_count = state.features.len(),
+            "plan stage completed"
+        );
         self.checkpoint(state)
     }
 
@@ -264,6 +304,20 @@ where
             match state.features[index].phase {
                 FeaturePhase::PendingBuild => {
                     let build_artifacts = feature_layout.stage_artifacts(WorkerStage::Build, 1);
+                    self.begin_stage(
+                        state,
+                        WorkerStage::Build,
+                        build_artifacts.attempt,
+                        Some(index),
+                        Some(state.features[index].feature_id.clone()),
+                    )?;
+                    info!(
+                        run_id = %state.run_id,
+                        feature_id = %state.features[index].feature_id,
+                        attempt = build_artifacts.attempt,
+                        feature_root = %feature_layout.root.display(),
+                        "starting build stage"
+                    );
                     let build_result = self
                         .worker
                         .build(
@@ -275,6 +329,7 @@ where
                         .await?;
                     self.artifacts
                         .write_json(&build_artifacts.result_file, &build_result)?;
+                    state.active_stage = None;
                     state.features[index].stages.push(RunStageRecord {
                         stage: build_result.stage,
                         attempt: build_artifacts.attempt,
@@ -332,6 +387,21 @@ where
                     );
                     let evaluate_artifacts =
                         feature_layout.stage_artifacts(WorkerStage::Evaluate, attempt);
+                    self.begin_stage(
+                        state,
+                        WorkerStage::Evaluate,
+                        evaluate_artifacts.attempt,
+                        Some(index),
+                        Some(state.features[index].feature_id.clone()),
+                    )?;
+                    info!(
+                        run_id = %state.run_id,
+                        feature_id = %state.features[index].feature_id,
+                        attempt = evaluate_artifacts.attempt,
+                        verification_count = evaluation_request.verification_commands.len(),
+                        screenshot_required = evaluation_request.require_screenshots,
+                        "starting evaluate stage"
+                    );
                     let evaluate_result = self
                         .worker
                         .evaluate(
@@ -343,6 +413,7 @@ where
                         .await?;
                     self.artifacts
                         .write_json(&evaluate_artifacts.result_file, &evaluate_result)?;
+                    state.active_stage = None;
                     state.features[index].stages.push(RunStageRecord {
                         stage: evaluate_result.stage,
                         attempt: evaluate_artifacts.attempt,
@@ -374,6 +445,12 @@ where
 
                     state.features[index].last_qa_status = Some(qa_report.status);
                     if qa_report.status == QaStatus::Pass {
+                        info!(
+                            run_id = %state.run_id,
+                            feature_id = %state.features[index].feature_id,
+                            attempt,
+                            "evaluate stage passed"
+                        );
                         state.features[index].status = FeatureLifecycleStatus::Passed;
                         state.features[index].phase = FeaturePhase::Complete;
                         state.current_feature_index += 1;
@@ -387,10 +464,24 @@ where
                     } else if state.features[index].repair_attempts_used
                         < self.config.runtime.max_repair_attempts
                     {
+                        info!(
+                            run_id = %state.run_id,
+                            feature_id = %state.features[index].feature_id,
+                            attempt,
+                            qa_status = qa_report.status.as_str(),
+                            "evaluate stage requested repair"
+                        );
                         state.features[index].phase = FeaturePhase::PendingRepair;
                         state.features[index].next_evaluate_attempt += 1;
                         self.checkpoint(state)?;
                     } else {
+                        info!(
+                            run_id = %state.run_id,
+                            feature_id = %state.features[index].feature_id,
+                            attempt,
+                            qa_status = qa_report.status.as_str(),
+                            "evaluate stage exhausted repair attempts"
+                        );
                         state.features[index].status = FeatureLifecycleStatus::Failed;
                         state.features[index].phase = FeaturePhase::Complete;
                         state.lifecycle = RunLifecycleStatus::Failed;
@@ -422,6 +513,23 @@ where
                     let attempt = state.features[index].repair_attempts_used + 1;
                     let repair_artifacts =
                         feature_layout.stage_artifacts(WorkerStage::Repair, attempt);
+                    self.begin_stage(
+                        state,
+                        WorkerStage::Repair,
+                        repair_artifacts.attempt,
+                        Some(index),
+                        Some(state.features[index].feature_id.clone()),
+                    )?;
+                    info!(
+                        run_id = %state.run_id,
+                        feature_id = %state.features[index].feature_id,
+                        attempt = repair_artifacts.attempt,
+                        resume_session_id = state.features[index]
+                            .last_session_id
+                            .as_deref()
+                            .unwrap_or("-"),
+                        "starting repair stage"
+                    );
                     let repair_result = self
                         .worker
                         .repair(
@@ -436,6 +544,7 @@ where
                         .await?;
                     self.artifacts
                         .write_json(&repair_artifacts.result_file, &repair_result)?;
+                    state.active_stage = None;
                     state.features[index].stages.push(RunStageRecord {
                         stage: repair_result.stage,
                         attempt: repair_artifacts.attempt,
@@ -518,19 +627,40 @@ where
         self.artifacts.write_json(&state.manifest_file, state)
     }
 
+    fn begin_stage(
+        &self,
+        state: &mut RunState,
+        stage: WorkerStage,
+        attempt: usize,
+        feature_index: Option<usize>,
+        feature_id: Option<String>,
+    ) -> Result<()> {
+        state.active_stage = Some(ActiveRunStage {
+            stage,
+            attempt,
+            feature_index,
+            feature_id,
+            started_at: Utc::now(),
+        });
+        self.checkpoint(state)
+    }
+
     fn worker_context(
         &self,
         run_id: Uuid,
         workspace: std::path::PathBuf,
         layout: RunLayout,
     ) -> WorkerContext {
+        let planner_prompt = layout.planner_prompt_file.clone();
+        let builder_prompt = layout.builder_prompt_file.clone();
+        let evaluator_prompt = layout.evaluator_prompt_file.clone();
         WorkerContext {
             run_id,
             workspace,
             layout,
-            planner_prompt: self.config.prompts.planner.clone(),
-            builder_prompt: self.config.prompts.builder.clone(),
-            evaluator_prompt: self.config.prompts.evaluator.clone(),
+            planner_prompt,
+            builder_prompt,
+            evaluator_prompt,
             planner_schema: self.config.schemas.planner_output.clone(),
             builder_schema: self.config.schemas.builder_handoff.clone(),
             qa_schema: self.config.schemas.qa_report.clone(),
@@ -538,8 +668,16 @@ where
     }
 
     fn layout_from_run_root(&self, run_root: &Path) -> RunLayout {
+        let inputs_dir = run_root.join("inputs");
+        let prompt_inputs_dir = inputs_dir.join("prompts");
         RunLayout {
             root: run_root.to_path_buf(),
+            inputs_dir: inputs_dir.clone(),
+            prompt_inputs_dir: prompt_inputs_dir.clone(),
+            planner_prompt_file: prompt_inputs_dir.join("planner.md"),
+            builder_prompt_file: prompt_inputs_dir.join("builder.md"),
+            evaluator_prompt_file: prompt_inputs_dir.join("evaluator.md"),
+            launch_file: run_root.join("launch.json"),
             request_file: run_root.join("request.md"),
             plan_file: run_root.join("plan.json"),
             runtime_plan_file: run_root.join("runtime-plan.json"),
@@ -548,6 +686,59 @@ where
             features_dir: run_root.join("features"),
             worker_dir: run_root.join("worker"),
         }
+    }
+
+    fn build_launch_snapshot(
+        &self,
+        request: &RunRequest,
+        launched_at: chrono::DateTime<Utc>,
+        effective_feature_limit: usize,
+    ) -> Result<RunLaunchSnapshot> {
+        let config_contents = request
+            .selected_config
+            .as_ref()
+            .map(|path| {
+                fs::read_to_string(path)
+                    .with_context(|| format!("failed to read config file {}", path.display()))
+            })
+            .transpose()?;
+        let prompts = PromptSnapshot {
+            planner: request.prompt_overrides.planner.clone().unwrap_or(
+                fs::read_to_string(&self.config.prompts.planner).with_context(|| {
+                    format!(
+                        "failed to read planner prompt {}",
+                        self.config.prompts.planner.display()
+                    )
+                })?,
+            ),
+            builder: request.prompt_overrides.builder.clone().unwrap_or(
+                fs::read_to_string(&self.config.prompts.builder).with_context(|| {
+                    format!(
+                        "failed to read builder prompt {}",
+                        self.config.prompts.builder.display()
+                    )
+                })?,
+            ),
+            evaluator: request.prompt_overrides.evaluator.clone().unwrap_or(
+                fs::read_to_string(&self.config.prompts.evaluator).with_context(|| {
+                    format!(
+                        "failed to read evaluator prompt {}",
+                        self.config.prompts.evaluator.display()
+                    )
+                })?,
+            ),
+        };
+
+        Ok(RunLaunchSnapshot {
+            source_workspace: request.source_workspace.clone(),
+            selected_config: request.selected_config.clone(),
+            config_contents,
+            requested_feature_limit: request.feature_limit,
+            effective_feature_limit,
+            user_request: request.user_request.clone(),
+            prompts,
+            launched_at,
+        })
     }
 
     fn feature_layout_from_state(&self, feature: &FeatureRunState) -> FeatureLayout {
@@ -717,7 +908,7 @@ mod tests {
         sync::{Arc, Mutex},
     };
 
-    use anyhow::Result;
+    use anyhow::{Context, Result};
     use async_trait::async_trait;
     use chrono::Utc;
     use tempfile::tempdir;
@@ -731,9 +922,10 @@ mod tests {
             ServiceConfig, SimulationWorkerConfig, WorkerConfig, WorkerKind, WorkspaceConfig,
         },
         domain::{
-            BuilderHandoff, EvaluationRequest, Feature, FeatureContract, FeatureLifecycleStatus,
-            PlanDocument, QaCheck, QaReport, QaStatus, RunLifecycleStatus, RunRequest,
-            RunStageRecord, RunState, WorkerResult, WorkerStage, WorkerStatus,
+            ActiveRunStage, BuilderHandoff, EvaluationRequest, Feature, FeatureContract,
+            FeatureLifecycleStatus, PlanDocument, PromptOverrides, QaCheck, QaReport, QaStatus,
+            RunLaunchSnapshot, RunLifecycleStatus, RunRequest, RunStageRecord, RunState,
+            WorkerResult, WorkerStage, WorkerStatus,
         },
         worker::{WorkerAdapter, WorkerContext},
         workspace::WorkspaceIsolation,
@@ -744,6 +936,7 @@ mod tests {
     #[derive(Default)]
     struct FakeState {
         evaluate_calls: usize,
+        observed_build_active_stage: Option<ActiveRunStage>,
     }
 
     struct FakeWorker {
@@ -784,11 +977,16 @@ mod tests {
 
         async fn build(
             &self,
-            _context: &WorkerContext,
+            context: &WorkerContext,
             _feature: &FeatureLayout,
             artifacts: &StageArtifactSet,
             _contract: &FeatureContract,
         ) -> Result<WorkerResult> {
+            let state: RunState = serde_json::from_slice(&fs::read(&context.layout.state_file)?)?;
+            let mut fake_state = self.state.lock().expect("lock");
+            if fake_state.observed_build_active_stage.is_none() {
+                fake_state.observed_build_active_stage = state.active_stage;
+            }
             let handoff = BuilderHandoff {
                 summary: "build".to_string(),
                 changed_files: Vec::new(),
@@ -865,6 +1063,55 @@ mod tests {
 
         let config = resolved_config(temp.path(), temp.path().join("runs"));
         let artifacts = FileArtifactStore::new(config.storage.runs_dir.clone());
+        let shared_state = Arc::new(Mutex::new(FakeState::default()));
+        let worker = FakeWorker {
+            state: shared_state.clone(),
+        };
+        let controller = HarnessController::new(config, artifacts, worker);
+
+        let state = controller
+            .start_run(RunRequest {
+                user_request: "Build a harness".to_string(),
+                source_workspace,
+                feature_limit: Some(2),
+                selected_config: None,
+                prompt_overrides: Default::default(),
+            })
+            .await?;
+        let observed = shared_state
+            .lock()
+            .expect("lock")
+            .observed_build_active_stage
+            .clone()
+            .expect("observed active stage");
+
+        assert_eq!(state.lifecycle, RunLifecycleStatus::Passed);
+        assert_eq!(state.features.len(), 2);
+        assert_eq!(observed.stage, WorkerStage::Build);
+        assert_eq!(observed.attempt, 1);
+        assert_eq!(observed.feature_index, Some(0));
+        assert_eq!(observed.feature_id.as_deref(), Some("feature-001"));
+        assert!(
+            state
+                .features
+                .iter()
+                .all(|feature| feature.status == FeatureLifecycleStatus::Passed)
+        );
+        assert!(state.state_file.exists());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn controller_snapshots_launch_inputs_and_prompt_overrides() -> Result<()> {
+        let temp = tempdir()?;
+        let source_workspace = temp.path().join("workspace");
+        fs::create_dir_all(&source_workspace)?;
+        let config_file = temp.path().join("config.toml");
+        fs::write(&config_file, "feature_limit = 2\n")?;
+
+        let config = resolved_config(temp.path(), temp.path().join("runs"));
+        let artifacts = FileArtifactStore::new(config.storage.runs_dir.clone());
         let worker = FakeWorker {
             state: Arc::new(Mutex::new(FakeState::default())),
         };
@@ -875,18 +1122,37 @@ mod tests {
                 user_request: "Build a harness".to_string(),
                 source_workspace,
                 feature_limit: Some(2),
+                selected_config: Some(config_file.clone()),
+                prompt_overrides: PromptOverrides {
+                    planner: Some("planner override\n".to_string()),
+                    builder: Some("builder override\n".to_string()),
+                    evaluator: None,
+                },
             })
             .await?;
 
-        assert_eq!(state.lifecycle, RunLifecycleStatus::Passed);
-        assert_eq!(state.features.len(), 2);
-        assert!(
-            state
-                .features
-                .iter()
-                .all(|feature| feature.status == FeatureLifecycleStatus::Passed)
+        let launch_file = state.launch_file.clone().expect("launch file");
+        let launch: RunLaunchSnapshot =
+            serde_json::from_slice(&fs::read(&launch_file).context("read launch")?)?;
+        assert_eq!(launch.selected_config, Some(config_file));
+        assert_eq!(launch.requested_feature_limit, Some(2));
+        assert_eq!(launch.effective_feature_limit, 2);
+        assert_eq!(launch.user_request, "Build a harness");
+        assert_eq!(launch.prompts.planner, "planner override\n");
+        assert_eq!(launch.prompts.builder, "builder override\n");
+        assert_eq!(launch.prompts.evaluator, "evaluator prompt\n");
+        assert_eq!(
+            fs::read_to_string(state.run_root.join("inputs/prompts/planner.md"))?,
+            "planner override\n"
         );
-        assert!(state.state_file.exists());
+        assert_eq!(
+            fs::read_to_string(state.run_root.join("inputs/prompts/builder.md"))?,
+            "builder override\n"
+        );
+        assert_eq!(
+            fs::read_to_string(state.run_root.join("inputs/prompts/evaluator.md"))?,
+            "evaluator prompt\n"
+        );
 
         Ok(())
     }
@@ -913,6 +1179,7 @@ mod tests {
             run_root: run_root.clone(),
             state_file: run_root.join("run-state.json"),
             manifest_file: run_root.join("manifest.json"),
+            launch_file: Some(run_root.join("launch.json")),
             request_file: run_root.join("request.md"),
             plan_file: run_root.join("plan.json"),
             runtime_plan_file: run_root.join("runtime-plan.json"),
@@ -921,6 +1188,7 @@ mod tests {
             lifecycle: RunLifecycleStatus::Running,
             final_status: None,
             current_feature_index: 0,
+            active_stage: None,
             plan_stage: Some(RunStageRecord {
                 stage: WorkerStage::Plan,
                 attempt: 1,
@@ -962,6 +1230,12 @@ mod tests {
         let schemas = project_root.join("schemas");
         let _ = fs::create_dir_all(&prompts);
         let _ = fs::create_dir_all(&schemas);
+        let _ = fs::write(prompts.join("planner.md"), "planner prompt\n");
+        let _ = fs::write(prompts.join("builder.md"), "builder prompt\n");
+        let _ = fs::write(prompts.join("evaluator.md"), "evaluator prompt\n");
+        let _ = fs::write(schemas.join("planner-output.json"), "{}\n");
+        let _ = fs::write(schemas.join("builder-handoff.json"), "{}\n");
+        let _ = fs::write(schemas.join("qa-report.json"), "{}\n");
 
         ResolvedConfig {
             project_root: project_root.to_path_buf(),
