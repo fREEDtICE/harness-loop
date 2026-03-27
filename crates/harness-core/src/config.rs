@@ -97,6 +97,8 @@ pub struct RuntimeConfig {
     pub feature_limit: usize,
     pub max_repair_attempts: usize,
     #[serde(default)]
+    pub continue_after_failure: bool,
+    #[serde(default)]
     pub supervision: RuntimeSupervisionConfig,
     #[serde(default)]
     pub services: Vec<ServiceConfig>,

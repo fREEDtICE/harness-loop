@@ -1,4 +1,7 @@
 /.runs
 /target
 /.runs-live
+/apps/harness-ui/node_modules
+/apps/harness-ui/dist
+/apps/harness-ui/src-tauri/target
 .DS_Store
