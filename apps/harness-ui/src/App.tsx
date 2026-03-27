@@ -134,6 +134,7 @@ const emptyOverrides: PromptOverrides = {
 export default function App() {
   const [profiles, setProfiles] = useState<WorkspaceProfile[]>([]);
   const [selectedWorkspacePath, setSelectedWorkspacePath] = useState<string | null>(null);
+  const [workspacePathDraft, setWorkspacePathDraft] = useState("");
   const [workspace, setWorkspace] = useState<WorkspacePayload | null>(null);
   const [editors, setEditors] = useState<EditorState | null>(null);
   const [statusMessage, setStatusMessage] = useState("Open a workspace to begin.");
@@ -213,8 +214,9 @@ export default function App() {
   }
 
   async function openWorkspace(path?: string) {
+    const requestedPath = path?.trim();
     const workspacePath =
-      path ??
+      (requestedPath ? requestedPath : null) ??
       (await invoke<string | null>("pick_workspace_folder").catch((error) => {
         setErrorMessage(readError(error));
         return null;
@@ -226,8 +228,19 @@ export default function App() {
 
     startUiTransition(() => {
       setSelectedWorkspacePath(workspacePath);
+      setWorkspacePathDraft(workspacePath);
     });
     await refreshWorkspace(workspacePath, true);
+  }
+
+  async function openWorkspaceFromDraft() {
+    const workspacePath = workspacePathDraft.trim();
+    if (!workspacePath) {
+      setErrorMessage("Enter a workspace path.");
+      return;
+    }
+
+    await openWorkspace(workspacePath);
   }
 
   async function refreshWorkspace(workspacePath: string, announce = false) {
@@ -237,6 +250,7 @@ export default function App() {
       });
       startTransition(() => {
         setWorkspace(payload);
+        setWorkspacePathDraft(payload.profile.workspace_path);
         setEditors({
           configPath: payload.profile.preferred_config_path ?? "",
           requestDraft: payload.profile.request_draft,
@@ -497,6 +511,27 @@ export default function App() {
               Open Workspace
             </button>
           </div>
+
+          <form
+            className="sidebar-intake"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void openWorkspaceFromDraft();
+            }}
+          >
+            <div className="split-input">
+              <input
+                value={workspacePathDraft}
+                onChange={(event) => setWorkspacePathDraft(event.target.value)}
+                placeholder="/absolute/path/to/.workspace"
+                spellCheck={false}
+              />
+              <button type="submit">Open Path</button>
+            </div>
+            <p className="sidebar-hint">
+              Hidden folder? Paste the full path and open it directly.
+            </p>
+          </form>
 
           <div className="workspace-list">
             {profiles.length === 0 ? (

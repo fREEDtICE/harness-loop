@@ -61,13 +61,19 @@ where
         );
         self.artifacts
             .write_json(&layout.runtime_plan_file, &runtime_plan)?;
-        let effective_feature_limit = request
-            .feature_limit
+        let requested_feature_limit = request.feature_limit.map(|limit| limit.max(1));
+        let effective_feature_limit = requested_feature_limit
             .unwrap_or(self.config.runtime.feature_limit)
             .max(1);
+        let feature_limit_is_hard = requested_feature_limit.is_some();
 
         let now = Utc::now();
-        let launch_snapshot = self.build_launch_snapshot(&request, now, effective_feature_limit)?;
+        let launch_snapshot = self.build_launch_snapshot(
+            &request,
+            now,
+            effective_feature_limit,
+            feature_limit_is_hard,
+        )?;
         self.artifacts
             .write_json(&layout.launch_file, &launch_snapshot)?;
         self.artifacts.write_text(
@@ -110,6 +116,7 @@ where
             &runtime_plan,
             &request.user_request,
             effective_feature_limit,
+            feature_limit_is_hard,
         )
         .await?;
 
@@ -131,11 +138,34 @@ where
                     )
                 })?;
 
-        if matches!(
-            state.lifecycle,
-            RunLifecycleStatus::Passed | RunLifecycleStatus::Failed
-        ) {
+        if state.lifecycle == RunLifecycleStatus::Passed {
             return Ok(state);
+        }
+
+        if state.lifecycle == RunLifecycleStatus::Failed {
+            if !self.config.runtime.continue_after_failure {
+                return Ok(state);
+            }
+
+            let next_index = state
+                .features
+                .iter()
+                .position(|f| f.status != FeatureLifecycleStatus::Failed && f.status != FeatureLifecycleStatus::Passed)
+                .unwrap_or(state.features.len());
+
+            if next_index >= state.features.len() {
+                return Ok(state);
+            }
+
+            info!(
+                run_id = %state.run_id,
+                next_feature_index = next_index,
+                "resuming failed run with continue_after_failure"
+            );
+            state.current_feature_index = next_index;
+            state.lifecycle = RunLifecycleStatus::Running;
+            state.active_stage = None;
+            self.checkpoint(&mut state)?;
         }
 
         let runtime_plan: RuntimePlan = self
@@ -157,6 +187,7 @@ where
                 &runtime_plan,
                 &request,
                 self.config.runtime.feature_limit.max(1),
+                false,
             )
             .await?;
         }
@@ -186,6 +217,7 @@ where
         runtime_plan: &RuntimePlan,
         user_request: &str,
         feature_limit: usize,
+        feature_limit_is_hard: bool,
     ) -> Result<()> {
         if state.plan_stage.is_some() && !state.features.is_empty() {
             return Ok(());
@@ -199,6 +231,7 @@ where
         let planning_request = PlanningRequest {
             user_request: user_request.to_string(),
             feature_limit,
+            feature_limit_is_hard,
             service_names: runtime_plan
                 .services
                 .iter()
@@ -214,6 +247,7 @@ where
             attempt = plan_artifacts.attempt,
             workspace = %state.execution_workspace.display(),
             feature_limit,
+            feature_limit_is_hard,
             "starting plan stage"
         );
         let plan_result = self
@@ -484,10 +518,16 @@ where
                         );
                         state.features[index].status = FeatureLifecycleStatus::Failed;
                         state.features[index].phase = FeaturePhase::Complete;
-                        state.lifecycle = RunLifecycleStatus::Failed;
                         state.final_status = Some(qa_report.status);
-                        self.checkpoint(state)?;
-                        break;
+
+                        if self.config.runtime.continue_after_failure {
+                            state.current_feature_index += 1;
+                            self.checkpoint(state)?;
+                        } else {
+                            state.lifecycle = RunLifecycleStatus::Failed;
+                            self.checkpoint(state)?;
+                            break;
+                        }
                     }
                 }
                 FeaturePhase::PendingRepair => {
@@ -578,6 +618,9 @@ where
                     if state.features[index].status == FeatureLifecycleStatus::Passed {
                         state.current_feature_index += 1;
                         self.checkpoint(state)?;
+                    } else if self.config.runtime.continue_after_failure {
+                        state.current_feature_index += 1;
+                        self.checkpoint(state)?;
                     } else {
                         state.lifecycle = RunLifecycleStatus::Failed;
                         self.checkpoint(state)?;
@@ -590,8 +633,20 @@ where
         if state.current_feature_index == state.features.len()
             && state.lifecycle != RunLifecycleStatus::Failed
         {
-            state.lifecycle = RunLifecycleStatus::Passed;
-            state.final_status = Some(QaStatus::Pass);
+            let has_failed_feature = state
+                .features
+                .iter()
+                .any(|f| f.status == FeatureLifecycleStatus::Failed);
+
+            if has_failed_feature {
+                state.lifecycle = RunLifecycleStatus::Failed;
+                if state.final_status.is_none() {
+                    state.final_status = Some(QaStatus::Fail);
+                }
+            } else {
+                state.lifecycle = RunLifecycleStatus::Passed;
+                state.final_status = Some(QaStatus::Pass);
+            }
             self.checkpoint(state)?;
         }
 
@@ -693,6 +748,7 @@ where
         request: &RunRequest,
         launched_at: chrono::DateTime<Utc>,
         effective_feature_limit: usize,
+        feature_limit_is_hard: bool,
     ) -> Result<RunLaunchSnapshot> {
         let config_contents = request
             .selected_config
@@ -735,6 +791,7 @@ where
             config_contents,
             requested_feature_limit: request.feature_limit,
             effective_feature_limit,
+            feature_limit_is_hard,
             user_request: request.user_request.clone(),
             prompts,
             launched_at,
@@ -1137,6 +1194,7 @@ mod tests {
         assert_eq!(launch.selected_config, Some(config_file));
         assert_eq!(launch.requested_feature_limit, Some(2));
         assert_eq!(launch.effective_feature_limit, 2);
+        assert!(launch.feature_limit_is_hard);
         assert_eq!(launch.user_request, "Build a harness");
         assert_eq!(launch.prompts.planner, "planner override\n");
         assert_eq!(launch.prompts.builder, "builder override\n");
@@ -1153,6 +1211,39 @@ mod tests {
             fs::read_to_string(state.run_root.join("inputs/prompts/evaluator.md"))?,
             "evaluator prompt\n"
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn controller_records_config_feature_limit_as_advisory() -> Result<()> {
+        let temp = tempdir()?;
+        let source_workspace = temp.path().join("workspace");
+        fs::create_dir_all(&source_workspace)?;
+
+        let config = resolved_config(temp.path(), temp.path().join("runs"));
+        let artifacts = FileArtifactStore::new(config.storage.runs_dir.clone());
+        let worker = FakeWorker {
+            state: Arc::new(Mutex::new(FakeState::default())),
+        };
+        let controller = HarnessController::new(config, artifacts, worker);
+
+        let state = controller
+            .start_run(RunRequest {
+                user_request: "Build a harness".to_string(),
+                source_workspace,
+                feature_limit: None,
+                selected_config: None,
+                prompt_overrides: Default::default(),
+            })
+            .await?;
+
+        let launch_file = state.launch_file.clone().expect("launch file");
+        let launch: RunLaunchSnapshot =
+            serde_json::from_slice(&fs::read(&launch_file).context("read launch")?)?;
+        assert_eq!(launch.requested_feature_limit, None);
+        assert_eq!(launch.effective_feature_limit, 2);
+        assert!(!launch.feature_limit_is_hard);
 
         Ok(())
     }

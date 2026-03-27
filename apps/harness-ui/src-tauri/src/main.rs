@@ -131,7 +131,10 @@ fn load_workspace(
     state: State<'_, AppState>,
     workspace_path: String,
 ) -> Result<WorkspacePayload, String> {
-    let workspace_path = normalize_path(PathBuf::from(workspace_path));
+    let workspace_path = state
+        .service
+        .validate_workspace_path(PathBuf::from(workspace_path))
+        .map_err(render_error)?;
     let _guard = state
         .profile_lock
         .lock()

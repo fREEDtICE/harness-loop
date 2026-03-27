@@ -69,14 +69,19 @@ impl HarnessUiService {
         resolve_effective_prompts(&resolved_config, overrides)
     }
 
-    pub fn prepare_launch(&self, draft: LaunchDraft) -> Result<PreparedLaunch> {
-        let workspace_path = normalize_path(draft.workspace_path);
+    pub fn validate_workspace_path(&self, workspace_path: impl AsRef<Path>) -> Result<PathBuf> {
+        let workspace_path = normalize_path(workspace_path.as_ref().to_path_buf());
         if !workspace_path.exists() {
             bail!("workspace {} does not exist", workspace_path.display());
         }
         if !workspace_path.is_dir() {
             bail!("workspace {} is not a directory", workspace_path.display());
         }
+        Ok(workspace_path)
+    }
+
+    pub fn prepare_launch(&self, draft: LaunchDraft) -> Result<PreparedLaunch> {
+        let workspace_path = self.validate_workspace_path(draft.workspace_path)?;
         if draft.request_draft.trim().is_empty() {
             bail!("request draft must not be empty");
         }
@@ -389,6 +394,19 @@ mod tests {
     use harness_core::domain::{PromptOverrides, RunLifecycleStatus, RunState};
 
     use super::{HarnessUiService, LaunchDraft};
+
+    #[test]
+    fn validate_workspace_path_accepts_hidden_directories() {
+        let temp = tempdir().expect("tempdir");
+        let hidden_workspace = temp.path().join(".workspace");
+        fs::create_dir_all(&hidden_workspace).expect("hidden workspace");
+
+        let service = HarnessUiService;
+        let validated = service
+            .validate_workspace_path(&hidden_workspace)
+            .expect("validate hidden workspace");
+        assert_eq!(validated, hidden_workspace);
+    }
 
     #[test]
     fn prepare_launch_applies_prompt_overrides() {

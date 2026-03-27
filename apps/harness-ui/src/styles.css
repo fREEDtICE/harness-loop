@@ -178,6 +178,22 @@ code,
   margin-bottom: 16px;
 }
 
+.sidebar-intake {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.sidebar-intake .split-input {
+  align-items: stretch;
+}
+
+.sidebar-hint {
+  margin: 0;
+  color: rgba(20, 54, 64, 0.72);
+  font-size: 0.82rem;
+}
+
 .panel-header h2,
 .prompt-editor h3,
 .feature-block h3 {

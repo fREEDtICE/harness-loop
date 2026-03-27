@@ -39,6 +39,7 @@ pub struct RunLaunchSnapshot {
     pub config_contents: Option<String>,
     pub requested_feature_limit: Option<usize>,
     pub effective_feature_limit: usize,
+    pub feature_limit_is_hard: bool,
     pub user_request: String,
     pub prompts: PromptSnapshot,
     pub launched_at: DateTime<Utc>,
@@ -48,6 +49,7 @@ pub struct RunLaunchSnapshot {
 pub struct PlanningRequest {
     pub user_request: String,
     pub feature_limit: usize,
+    pub feature_limit_is_hard: bool,
     pub service_names: Vec<String>,
     pub verification_commands: Vec<Vec<String>>,
 }
@@ -397,10 +399,14 @@ impl PlanningRequest {
             .trim()
             .to_string();
         let feature_limit = self.feature_limit.max(1);
-        let (slice_descriptions, explicit_slice_count) =
-            self.derive_feature_slices(&goal, feature_limit);
+        let (slice_descriptions, explicit_slice_count) = self.derive_feature_slices(&goal);
+        let features = if self.feature_limit_is_hard {
+            self.enforce_feature_limit(slice_descriptions, &goal, feature_limit)
+        } else {
+            slice_descriptions
+        };
 
-        let features = slice_descriptions
+        let features = features
             .iter()
             .enumerate()
             .map(|(index, slice)| Feature {
@@ -427,7 +433,7 @@ impl PlanningRequest {
         }
     }
 
-    fn derive_feature_slices(&self, goal: &str, feature_limit: usize) -> (Vec<String>, usize) {
+    fn derive_feature_slices(&self, goal: &str) -> (Vec<String>, usize) {
         let lines = self
             .user_request
             .lines()
@@ -459,14 +465,22 @@ impl PlanningRequest {
             slices.push(goal.to_string());
         }
 
-        let explicit_slice_count = slices.len().min(feature_limit);
+        let explicit_slice_count = slices.len();
+        (slices, explicit_slice_count)
+    }
 
+    fn enforce_feature_limit(
+        &self,
+        mut slices: Vec<String>,
+        goal: &str,
+        feature_limit: usize,
+    ) -> Vec<String> {
         while slices.len() < feature_limit {
             slices.push(self.follow_up_slice(slices.len() + 1, goal));
         }
 
         slices.truncate(feature_limit);
-        (slices, explicit_slice_count)
+        slices
     }
 
     fn follow_up_slice(&self, sequence: usize, goal: &str) -> String {
@@ -544,7 +558,7 @@ impl PlanningRequest {
             ));
         }
 
-        if explicit_slice_count < feature_limit {
+        if self.feature_limit_is_hard && explicit_slice_count < feature_limit {
             risks.push(
                 "The request does not spell out enough independent slices for the requested feature limit, so later features are planner-derived follow-ups."
                     .to_string(),
@@ -721,6 +735,7 @@ mod tests {
         let plan = PlanningRequest {
             user_request: "Build a harness".to_string(),
             feature_limit: 2,
+            feature_limit_is_hard: true,
             service_names: Vec::new(),
             verification_commands: Vec::new(),
         }
@@ -736,6 +751,7 @@ mod tests {
             user_request: "Ship the auth flow\n- Add signup form\n- Add email verification\n"
                 .to_string(),
             feature_limit: 2,
+            feature_limit_is_hard: true,
             service_names: vec!["web".to_string()],
             verification_commands: vec![vec!["cargo".to_string(), "test".to_string()]],
         }
@@ -751,6 +767,7 @@ mod tests {
         let plan = PlanningRequest {
             user_request: "Build the settings page".to_string(),
             feature_limit: 1,
+            feature_limit_is_hard: true,
             service_names: Vec::new(),
             verification_commands: vec![vec!["/usr/bin/env".to_string(), "true".to_string()]],
         }
@@ -766,6 +783,29 @@ mod tests {
                 .acceptance_criteria
                 .iter()
                 .any(|criterion| criterion.contains("Replace placeholder verification"))
+        );
+    }
+
+    #[test]
+    fn synthesized_plan_treats_non_hard_feature_limit_as_advisory() {
+        let plan = PlanningRequest {
+            user_request: "Ship the auth flow\n- Add signup form\n- Add email verification\n"
+                .to_string(),
+            feature_limit: 1,
+            feature_limit_is_hard: false,
+            service_names: vec!["web".to_string()],
+            verification_commands: vec![vec!["cargo".to_string(), "test".to_string()]],
+        }
+        .synthesize_plan();
+
+        assert_eq!(plan.features.len(), 2);
+        assert_eq!(plan.features[0].title, "Add signup form");
+        assert_eq!(plan.features[1].title, "Add email verification");
+        assert!(
+            !plan
+                .risks
+                .iter()
+                .any(|risk| risk.contains("planner-derived follow-ups"))
         );
     }
 }
