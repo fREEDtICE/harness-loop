@@ -274,6 +274,24 @@ fn default_profile_store_path() -> PathBuf {
         .join("workspace-profiles.json")
 }
 
+#[tauri::command]
+fn write_ui_state(json: String) -> Result<(), String> {
+    let path = ui_state_snapshot_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(render_error)?;
+    }
+    std::fs::write(&path, json.as_bytes()).map_err(render_error)
+}
+
+fn ui_state_snapshot_path() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".codex-harness-rs")
+        .join("ui")
+        .join("ui-state.json")
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(AppState::new())
@@ -289,6 +307,7 @@ fn main() {
             inspect_run,
             start_run,
             resume_run,
+            write_ui_state,
         ])
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {

@@ -7,6 +7,7 @@ import {
   useState,
   useTransition,
 } from "react";
+import UIStateReporter from "./UIStateReporter";
 
 type PromptOverrides = {
   planner: string | null;
@@ -134,7 +135,6 @@ const emptyOverrides: PromptOverrides = {
 export default function App() {
   const [profiles, setProfiles] = useState<WorkspaceProfile[]>([]);
   const [selectedWorkspacePath, setSelectedWorkspacePath] = useState<string | null>(null);
-  const [workspacePathDraft, setWorkspacePathDraft] = useState("");
   const [workspace, setWorkspace] = useState<WorkspacePayload | null>(null);
   const [editors, setEditors] = useState<EditorState | null>(null);
   const [statusMessage, setStatusMessage] = useState("Open a workspace to begin.");
@@ -228,29 +228,17 @@ export default function App() {
 
     startUiTransition(() => {
       setSelectedWorkspacePath(workspacePath);
-      setWorkspacePathDraft(workspacePath);
     });
     await refreshWorkspace(workspacePath, true);
-  }
-
-  async function openWorkspaceFromDraft() {
-    const workspacePath = workspacePathDraft.trim();
-    if (!workspacePath) {
-      setErrorMessage("Enter a workspace path.");
-      return;
-    }
-
-    await openWorkspace(workspacePath);
   }
 
   async function refreshWorkspace(workspacePath: string, announce = false) {
     try {
       const payload = await invoke<WorkspacePayload>("load_workspace", {
-        workspace_path: workspacePath,
+        workspacePath: workspacePath,
       });
       startTransition(() => {
         setWorkspace(payload);
-        setWorkspacePathDraft(payload.profile.workspace_path);
         setEditors({
           configPath: payload.profile.preferred_config_path ?? "",
           requestDraft: payload.profile.request_draft,
@@ -298,7 +286,7 @@ export default function App() {
   async function removeProfile(workspacePath: string) {
     try {
       const nextProfiles = await invoke<WorkspaceProfile[]>("remove_profile", {
-        workspace_path: workspacePath,
+        workspacePath: workspacePath,
       });
       setProfiles(nextProfiles);
       if (selectedWorkspacePath === workspacePath) {
@@ -335,7 +323,7 @@ export default function App() {
 
     try {
       const bundle = await invoke<PromptBundle>("load_prompt_bundle", {
-        config_path: path,
+        configPath: path,
         overrides: overrides ?? currentOverrides(editors, promptDefaults),
       });
       setWorkspace((current) =>
@@ -383,8 +371,8 @@ export default function App() {
 
     try {
       const run = await invoke<RunState>("inspect_run", {
-        config_path: configPath,
-        run_root: runRoot,
+        configPath: configPath,
+        runRoot: runRoot,
       });
       setWorkspace((current) =>
         current
@@ -456,8 +444,8 @@ export default function App() {
 
     try {
       const run = await invoke<RunState>("resume_run", {
-        config_path: configPath,
-        run_root: runRoot,
+        configPath: configPath,
+        runRoot: runRoot,
       });
       setWorkspace((current) =>
         current
@@ -482,10 +470,20 @@ export default function App() {
   const runsDeferred = useMemo(() => workspace?.runs ?? [], [workspace?.runs]);
 
   return (
-    <div className="app-shell">
+    <div className="app-shell" data-testid="app-shell">
       <div className="backdrop backdrop-a" />
       <div className="backdrop backdrop-b" />
-      <header className="hero">
+      <UIStateReporter
+        profiles={profiles}
+        selectedWorkspacePath={selectedWorkspacePath}
+        workspace={workspace}
+        editors={editors}
+        statusMessage={statusMessage}
+        errorMessage={errorMessage}
+        isRunning={isRunning}
+        isPending={isPending}
+      />
+      <header className="hero" data-testid="hero">
         <div>
           <p className="eyebrow">Harness Control Room</p>
           <h1>Codex Harness UI</h1>
@@ -494,79 +492,66 @@ export default function App() {
             Rust harness.
           </p>
         </div>
-        <div className="hero-status">
-          <div className="status-chip">{statusMessage}</div>
-          {errorMessage ? <div className="status-chip error">{errorMessage}</div> : null}
+        <div className="hero-status" data-testid="hero-status">
+          <div className="status-chip" data-testid="status-message">{statusMessage}</div>
+          {errorMessage ? <div className="status-chip error" data-testid="error-message">{errorMessage}</div> : null}
         </div>
       </header>
 
       <main className="layout">
-        <aside className="panel sidebar">
-          <div className="panel-header">
-            <div>
-              <p className="panel-kicker">Quick Links</p>
-              <h2>Workspaces</h2>
-            </div>
-            <button className="primary-button" onClick={() => void openWorkspace()}>
-              Open Workspace
-            </button>
+        <aside className="panel sidebar" data-testid="sidebar">
+          <button
+            className="sidebar-new-button"
+            data-testid="sidebar-open-workspace"
+            onClick={() => void openWorkspace()}
+          >
+            <span className="sidebar-new-icon">+</span>
+            New Workspace
+          </button>
+
+          <div className="sidebar-section-label" data-testid="sidebar-workspace-count">
+            Workspaces · {profiles.length}
           </div>
 
-          <form
-            className="sidebar-intake"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void openWorkspaceFromDraft();
-            }}
-          >
-            <div className="split-input">
-              <input
-                value={workspacePathDraft}
-                onChange={(event) => setWorkspacePathDraft(event.target.value)}
-                placeholder="/absolute/path/to/.workspace"
-                spellCheck={false}
-              />
-              <button type="submit">Open Path</button>
-            </div>
-            <p className="sidebar-hint">
-              Hidden folder? Paste the full path and open it directly.
-            </p>
-          </form>
-
-          <div className="workspace-list">
+          <div className="workspace-list" data-testid="sidebar-workspace-list">
             {profiles.length === 0 ? (
-              <div className="empty-state">
-                Pick a workspace folder to create the first quick link.
+              <div className="empty-state" data-testid="sidebar-empty-state">
+                Open a folder to get started.
               </div>
             ) : (
               profiles.map((profile) => {
                 const selected = selectedWorkspacePath === profile.workspace_path;
+                const running = selected && isRunning;
                 return (
                   <button
                     key={profile.workspace_path}
-                    className={`workspace-card ${selected ? "selected" : ""}`}
+                    data-testid={`sidebar-workspace-${basename(profile.workspace_path)}`}
+                    className={`sidebar-item ${selected ? "selected" : ""}`}
                     onClick={() => void openWorkspace(profile.workspace_path)}
                   >
-                    <div className="workspace-card-top">
-                      <span>{profile.display_name}</span>
-                      <span
-                        className="ghost-link"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          void removeProfile(profile.workspace_path);
-                        }}
-                      >
-                        Remove
+                    <span className={`sidebar-item-icon ${running ? "running" : profile.last_run_root ? "done" : "idle"}`}>
+                      {running ? "◉" : profile.last_run_root ? "✓" : "○"}
+                    </span>
+                    <div className="sidebar-item-text">
+                      <span className="sidebar-item-name">{basename(profile.workspace_path)}</span>
+                      <span className="sidebar-item-desc">
+                        {running
+                          ? "Running…"
+                          : profile.last_run_root
+                            ? `Last run · ${basename(profile.last_run_root)}`
+                            : "No runs yet"}
                       </span>
                     </div>
-                    <p className="workspace-path">{profile.workspace_path}</p>
-                    {profile.last_run_root ? (
-                      <p className="workspace-meta">
-                        Last run {basename(profile.last_run_root)}
-                      </p>
-                    ) : (
-                      <p className="workspace-meta">No recorded run yet</p>
-                    )}
+                    <span
+                      className="sidebar-item-remove"
+                      data-testid={`sidebar-remove-${basename(profile.workspace_path)}`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void removeProfile(profile.workspace_path);
+                      }}
+                    >
+                      ×
+                    </span>
                   </button>
                 );
               })
@@ -574,117 +559,112 @@ export default function App() {
           </div>
         </aside>
 
-        <section className="content-grid">
-          <section className="panel launch-panel">
-            <div className="panel-header">
-              <div>
-                <p className="panel-kicker">Launch Brief</p>
-                <h2>
-                  {workspace?.profile.display_name ?? "Select a workspace"}
-                </h2>
+        {workspace && editors ? (
+          <section className="content-grid">
+            <section className="panel launch-panel" data-testid="launch-panel">
+              <div className="panel-header">
+                <div>
+                  <p className="panel-kicker">Launch Brief</p>
+                  <h2 data-testid="launch-title">
+                    {workspace.profile.display_name}
+                  </h2>
+                </div>
+                {isPending ? <div className="subtle-pill" data-testid="launch-loading">Loading</div> : null}
               </div>
-              {isPending ? <div className="subtle-pill">Loading</div> : null}
-            </div>
 
-            {workspace && editors ? (
-              <>
-                <div className="field-group">
-                  <label>Workspace path</label>
-                  <code>{workspace.profile.workspace_path}</code>
-                </div>
-                <div className="field-group">
-                  <label>Config file</label>
-                  <div className="split-input">
-                    <input
-                      value={editors.configPath}
-                      onChange={(event) =>
-                        setEditors({ ...editors, configPath: event.target.value })
-                      }
-                      placeholder="config/codex-cli.toml"
-                    />
-                    <button onClick={() => void chooseConfigFile()}>Choose</button>
-                    <button
-                      className="secondary-button"
-                      onClick={() => void reloadPrompts()}
-                    >
-                      Reload
-                    </button>
-                  </div>
-                  {workspace.config_error ? (
-                    <p className="field-error">{workspace.config_error}</p>
-                  ) : null}
-                </div>
-                <div className="field-group">
-                  <label>Request</label>
-                  <textarea
-                    value={editors.requestDraft}
+              <div className="field-group">
+                <label>Workspace path</label>
+                <code data-testid="launch-workspace-path">{workspace.profile.workspace_path}</code>
+              </div>
+              <div className="field-group">
+                <label>Config file</label>
+                <div className="split-input">
+                  <input
+                    data-testid="launch-config-input"
+                    value={editors.configPath}
                     onChange={(event) =>
-                      setEditors({ ...editors, requestDraft: event.target.value })
+                      setEditors({ ...editors, configPath: event.target.value })
                     }
-                    rows={9}
-                    placeholder="Describe the feature slice to build."
+                    placeholder="config/codex-cli.toml"
                   />
-                </div>
-                <div className="action-row">
-                  <button
-                    className="primary-button"
-                    onClick={() => void launchRun()}
-                    disabled={isRunning}
-                  >
-                    {isRunning ? "Running…" : "Start Run"}
-                  </button>
+                  <button data-testid="launch-config-choose" onClick={() => void chooseConfigFile()}>Choose</button>
                   <button
                     className="secondary-button"
-                    onClick={() => selectedWorkspacePath && void refreshWorkspace(selectedWorkspacePath, false)}
+                    data-testid="launch-config-reload"
+                    onClick={() => void reloadPrompts()}
                   >
-                    Refresh Workspace
+                    Reload
                   </button>
                 </div>
-              </>
-            ) : (
-              <div className="empty-state large">
-                The control room is empty. Open a workspace from the left rail.
+                {workspace.config_error ? (
+                  <p className="field-error" data-testid="launch-config-error">{workspace.config_error}</p>
+                ) : null}
               </div>
-            )}
-          </section>
-
-          <section className="panel prompt-panel">
-            <div className="panel-header">
-              <div>
-                <p className="panel-kicker">Prompt Studio</p>
-                <h2>Planner, Builder, Evaluator</h2>
+              <div className="field-group">
+                <label>Request</label>
+                <textarea
+                  data-testid="launch-request-textarea"
+                  value={editors.requestDraft}
+                  onChange={(event) =>
+                    setEditors({ ...editors, requestDraft: event.target.value })
+                  }
+                  rows={9}
+                  placeholder="Describe the feature slice to build."
+                />
               </div>
-              <button className="secondary-button" onClick={() => void resetPromptOverrides()}>
-                Reset Overrides
-              </button>
-            </div>
+              <div className="action-row">
+                <button
+                  className="primary-button"
+                  data-testid="launch-start-button"
+                  onClick={() => void launchRun()}
+                  disabled={isRunning}
+                >
+                  {isRunning ? "Running…" : "Start Run"}
+                </button>
+                <button
+                  className="secondary-button"
+                  data-testid="launch-refresh-button"
+                  onClick={() => selectedWorkspacePath && void refreshWorkspace(selectedWorkspacePath, false)}
+                >
+                  Refresh Workspace
+                </button>
+              </div>
+            </section>
 
-            {workspace && editors ? (
-              <div className="prompt-grid">
+          <section className="panel prompt-panel" data-testid="prompt-panel">
+              <div className="panel-header">
+                <div>
+                  <p className="panel-kicker">Prompt Studio</p>
+                  <h2>Planner, Builder, Evaluator</h2>
+                </div>
+                <button className="secondary-button" data-testid="prompt-reset-overrides" onClick={() => void resetPromptOverrides()}>
+                  Reset Overrides
+                </button>
+              </div>
+
+              <div className="prompt-grid" data-testid="prompt-grid">
                 <PromptEditor
+                  testid="prompt-editor-planner"
                   title="Planner"
                   value={editors.plannerPrompt}
                   onChange={(value) => setEditors({ ...editors, plannerPrompt: value })}
                 />
                 <PromptEditor
+                  testid="prompt-editor-builder"
                   title="Builder"
                   value={editors.builderPrompt}
                   onChange={(value) => setEditors({ ...editors, builderPrompt: value })}
                 />
                 <PromptEditor
+                  testid="prompt-editor-evaluator"
                   title="Evaluator"
                   value={editors.evaluatorPrompt}
                   onChange={(value) => setEditors({ ...editors, evaluatorPrompt: value })}
                 />
               </div>
-            ) : (
-              <div className="empty-state">
-                Prompt editors appear once a workspace is selected.
-              </div>
-            )}
-          </section>
+            </section>
 
-          <section className="panel history-panel">
+          <section className="panel history-panel" data-testid="history-panel">
             <div className="panel-header">
               <div>
                 <p className="panel-kicker">Run Ledger</p>
@@ -693,11 +673,11 @@ export default function App() {
             </div>
 
             {runsDeferred.length === 0 ? (
-              <div className="empty-state">No runs discovered for this workspace yet.</div>
+              <div className="empty-state" data-testid="history-empty-state">No runs discovered for this workspace yet.</div>
             ) : (
-              <div className="run-list">
+              <div className="run-list" data-testid="history-run-list">
                 {runsDeferred.map((run) => (
-                  <article key={run.run_root} className="run-card">
+                  <article key={run.run_root} className="run-card" data-testid={`history-run-${basename(run.run_root)}`}>
                     <div className="run-card-top">
                       <strong>{basename(run.run_root)}</strong>
                       <span className={`state-pill state-${run.lifecycle}`}>
@@ -718,6 +698,7 @@ export default function App() {
                     <div className="action-row compact">
                       <button
                         className="secondary-button"
+                        data-testid={`history-inspect-${basename(run.run_root)}`}
                         onClick={() => void inspectRun(run.run_root)}
                       >
                         Inspect
@@ -725,6 +706,7 @@ export default function App() {
                       {run.lifecycle === "running" ? (
                         <button
                           className="primary-button"
+                          data-testid={`history-resume-${basename(run.run_root)}`}
                           onClick={() => void resumeRun(run.run_root)}
                           disabled={isRunning}
                         >
@@ -738,14 +720,14 @@ export default function App() {
             )}
           </section>
 
-          <section className="panel monitor-panel">
+          <section className="panel monitor-panel" data-testid="monitor-panel">
             <div className="panel-header">
               <div>
                 <p className="panel-kicker">Loop Monitor</p>
                 <h2>Current Run</h2>
               </div>
               {activeRun ? (
-                <span className={`state-pill state-${activeRun.lifecycle}`}>
+                <span className={`state-pill state-${activeRun.lifecycle}`} data-testid="monitor-lifecycle-pill">
                   {activeRun.final_status
                     ? `${activeRun.lifecycle} / ${activeRun.final_status}`
                     : activeRun.lifecycle}
@@ -755,18 +737,21 @@ export default function App() {
 
             {activeRun ? (
               <>
-                <div className="monitor-summary">
+                <div className="monitor-summary" data-testid="monitor-summary">
                   <StatCard
+                    testid="monitor-stat-run-root"
                     label="Run Root"
                     value={basename(activeRun.run_root)}
                     detail={activeRun.run_root}
                   />
                   <StatCard
+                    testid="monitor-stat-progress"
                     label="Progress"
                     value={`${activeRun.current_feature_index}/${activeRun.features.length}`}
                     detail="current feature / total features"
                   />
                   <StatCard
+                    testid="monitor-stat-active-stage"
                     label="Active Stage"
                     value={
                       activeRun.active_stage
@@ -780,15 +765,16 @@ export default function App() {
                     }
                   />
                 </div>
-                <div className="timeline">
+                <div className="timeline" data-testid="monitor-timeline">
                   {activeRun.plan_stage ? (
                     <StageRow
+                      testid="monitor-plan-stage"
                       heading="Plan"
                       text={`attempt ${activeRun.plan_stage.attempt} / ${activeRun.plan_stage.status}`}
                     />
                   ) : null}
                   {activeRun.features.map((feature) => (
-                    <div key={feature.feature_id} className="feature-block">
+                    <div key={feature.feature_id} className="feature-block" data-testid={`monitor-feature-${feature.feature_id}`}>
                       <div className="feature-block-header">
                         <div>
                           <h3>{feature.title}</h3>
@@ -804,6 +790,7 @@ export default function App() {
                         {feature.stages.map((stage) => (
                           <StageRow
                             key={`${feature.feature_id}-${stage.stage}-${stage.attempt}`}
+                            testid={`monitor-stage-${feature.feature_id}-${stage.stage}-${stage.attempt}`}
                             heading={stage.stage}
                             text={`attempt ${stage.attempt} / ${stage.status}`}
                           />
@@ -814,45 +801,172 @@ export default function App() {
                 </div>
               </>
             ) : (
-              <div className="empty-state">Select a run from the ledger to inspect it here.</div>
+              <div className="empty-state" data-testid="monitor-empty-state">Select a run from the ledger to inspect it here.</div>
             )}
           </section>
-        </section>
+          </section>
+        ) : (
+          <HarnessLanding />
+        )}
       </main>
     </div>
   );
 }
 
+function HarnessLanding() {
+  return (
+    <section className="landing" data-testid="landing">
+      <div className="landing-hero">
+        <h2>The Entropy Problem</h2>
+        <p className="landing-subtitle">
+          Why AI-generated code drifts — and how this harness fights back.
+        </p>
+      </div>
+
+      <div className="landing-columns">
+        <div className="landing-card">
+          <div className="landing-card-header">
+            <div className="landing-card-icon entropy">⚠</div>
+            <h3>AI Coding Increases Entropy</h3>
+          </div>
+          <ul className="landing-list">
+            <li>The model sees only a slice of the system at a time</li>
+            <li>It optimizes locally, missing cross-file constraints</li>
+            <li>Small inconsistencies accumulate across edits</li>
+            <li>Later changes build on already-drifted assumptions</li>
+            <li>Without explicit contracts, the system degrades silently</li>
+          </ul>
+        </div>
+
+        <div className="landing-card">
+          <div className="landing-card-header">
+            <div className="landing-card-icon harness">⟳</div>
+            <h3>The Harness Loop</h3>
+          </div>
+          <p className="landing-card-desc">
+            A durable, checkpoint-resumable cycle that continuously reduces entropy
+            through deterministic verification and targeted repair.
+          </p>
+        </div>
+      </div>
+
+      <div className="landing-diagram" data-testid="landing-loop-diagram">
+        <svg viewBox="0 0 780 320" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+              <path d="M0 0 L8 3 L0 6" fill="#484f58" />
+            </marker>
+            <marker id="arrow-green" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+              <path d="M0 0 L8 3 L0 6" fill="#3fb950" />
+            </marker>
+            <marker id="arrow-red" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+              <path d="M0 0 L8 3 L0 6" fill="#f85149" />
+            </marker>
+            <marker id="arrow-blue" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+              <path d="M0 0 L8 3 L0 6" fill="#58a6ff" />
+            </marker>
+          </defs>
+
+          {/* User request input */}
+          <rect x="40" y="24" width="120" height="50" rx="10" fill="#161b22" stroke="#484f58" strokeWidth="1.5" />
+          <text x="100" y="46" textAnchor="middle" fill="#c9d1d9" fontSize="11" fontWeight="700">USER REQUEST</text>
+          <text x="100" y="62" textAnchor="middle" fill="#484f58" fontSize="10">Feature goal</text>
+          <line x1="100" y1="74" x2="100" y2="115" stroke="#484f58" strokeWidth="1.5" markerEnd="url(#arrow)" />
+
+          {/* Plan box */}
+          <rect x="40" y="120" width="120" height="60" rx="10" fill="#161b22" stroke="#d29922" strokeWidth="1.5" />
+          <text x="100" y="145" textAnchor="middle" fill="#d29922" fontSize="11" fontWeight="700">PLAN</text>
+          <text x="100" y="162" textAnchor="middle" fill="#8b949e" fontSize="10">Split features</text>
+
+          {/* Arrow: Plan → Build */}
+          <line x1="160" y1="150" x2="215" y2="150" stroke="#484f58" strokeWidth="1.5" markerEnd="url(#arrow)" />
+
+          {/* Build box */}
+          <rect x="220" y="120" width="120" height="60" rx="10" fill="#161b22" stroke="#58a6ff" strokeWidth="1.5" />
+          <text x="280" y="145" textAnchor="middle" fill="#58a6ff" fontSize="11" fontWeight="700">BUILD</text>
+          <text x="280" y="162" textAnchor="middle" fill="#8b949e" fontSize="10">Generate code</text>
+
+          {/* Arrow: Build → Evaluate */}
+          <line x1="340" y1="150" x2="395" y2="150" stroke="#484f58" strokeWidth="1.5" markerEnd="url(#arrow)" />
+
+          {/* Evaluate box */}
+          <rect x="400" y="120" width="120" height="60" rx="10" fill="#161b22" stroke="#8b5cf6" strokeWidth="1.5" />
+          <text x="460" y="145" textAnchor="middle" fill="#8b5cf6" fontSize="11" fontWeight="700">EVALUATE</text>
+          <text x="460" y="162" textAnchor="middle" fill="#8b949e" fontSize="10">Verify + QA</text>
+
+          {/* Arrow: Evaluate → Pass (straight right) */}
+          <line x1="520" y1="150" x2="615" y2="150" stroke="#3fb950" strokeWidth="1.5" markerEnd="url(#arrow-green)" />
+          <text x="568" y="142" textAnchor="middle" fill="#3fb950" fontSize="10" fontWeight="600">Pass</text>
+
+          {/* Next Feature box (same row as Evaluate) */}
+          <rect x="620" y="120" width="140" height="60" rx="10" fill="#161b22" stroke="#3fb950" strokeWidth="1.5" />
+          <text x="690" y="145" textAnchor="middle" fill="#3fb950" fontSize="11" fontWeight="700">NEXT FEATURE</text>
+          <text x="690" y="162" textAnchor="middle" fill="#8b949e" fontSize="10">or complete</text>
+
+          {/* Arrow: Evaluate → Fail (down) */}
+          <line x1="460" y1="180" x2="460" y2="225" stroke="#f85149" strokeWidth="1.5" markerEnd="url(#arrow-red)" />
+          <text x="475" y="210" fill="#f85149" fontSize="10" fontWeight="600">Fail</text>
+
+          {/* Repair box */}
+          <rect x="400" y="230" width="120" height="60" rx="10" fill="#161b22" stroke="#f85149" strokeWidth="1.5" />
+          <text x="460" y="255" textAnchor="middle" fill="#f85149" fontSize="11" fontWeight="700">REPAIR</text>
+          <text x="460" y="272" textAnchor="middle" fill="#8b949e" fontSize="10">Fix issues</text>
+
+          {/* Arrow: Repair → Build (from REPAIR left, down, left, up into BUILD bottom) */}
+          <path d="M400 260 L280 260 L280 185" stroke="#58a6ff" strokeWidth="1.5" strokeDasharray="6 3" markerEnd="url(#arrow-blue)" fill="none" />
+          <text x="330" y="253" fill="#58a6ff" fontSize="10" fontWeight="600">Retry</text>
+
+          {/* Arrow: Repair → Failed (straight right) */}
+          <line x1="520" y1="260" x2="615" y2="260" stroke="#f85149" strokeWidth="1.5" strokeDasharray="4 3" markerEnd="url(#arrow-red)" />
+          <text x="568" y="252" textAnchor="middle" fill="#484f58" fontSize="9">Max retries</text>
+
+          {/* Failed box (same row as Repair) */}
+          <rect x="620" y="230" width="140" height="60" rx="10" fill="#161b22" stroke="#484f58" strokeWidth="1.5" />
+          <text x="690" y="255" textAnchor="middle" fill="#f85149" fontSize="11" fontWeight="700">FAILED</text>
+          <text x="690" y="272" textAnchor="middle" fill="#8b949e" fontSize="10">or continue</text>
+
+          {/* Legend */}
+          <text x="40" y="312" fill="#484f58" fontSize="9">Each feature loops independently · Checkpointed after every stage · Resumable on crash</text>
+        </svg>
+      </div>
+    </section>
+  );
+}
+
 function PromptEditor({
+  testid,
   title,
   value,
   onChange,
 }: {
+  testid: string;
   title: string;
   value: string;
   onChange: (value: string) => void;
 }) {
   return (
-    <section className="prompt-editor">
+    <section className="prompt-editor" data-testid={testid}>
       <div className="prompt-editor-header">
         <h3>{title}</h3>
       </div>
-      <textarea value={value} onChange={(event) => onChange(event.target.value)} rows={9} />
+      <textarea data-testid={`${testid}-textarea`} value={value} onChange={(event) => onChange(event.target.value)} rows={9} />
     </section>
   );
 }
 
 function StatCard({
+  testid,
   label,
   value,
   detail,
 }: {
+  testid: string;
   label: string;
   value: string;
   detail: string;
 }) {
   return (
-    <article className="stat-card">
+    <article className="stat-card" data-testid={testid}>
       <span>{label}</span>
       <strong>{value}</strong>
       <p>{detail}</p>
@@ -860,9 +974,9 @@ function StatCard({
   );
 }
 
-function StageRow({ heading, text }: { heading: string; text: string }) {
+function StageRow({ testid, heading, text }: { testid?: string; heading: string; text: string }) {
   return (
-    <div className="stage-row">
+    <div className="stage-row" data-testid={testid}>
       <strong>{heading}</strong>
       <span>{text}</span>
     </div>
