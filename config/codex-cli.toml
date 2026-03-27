@@ -38,8 +38,12 @@ builder_handoff = "schemas/builder-handoff.json"
 qa_report = "schemas/qa-report.json"
 
 [runtime]
+# Advisory planner slice count. Use `--feature-limit` for a hard per-run cap.
 feature_limit = 3
 max_repair_attempts = 2
+# When true, a failed feature does not stop the run; remaining features continue.
+# resume will also continue past previously failed features.
+continue_after_failure = false
 
 [runtime.supervision]
 enabled = true

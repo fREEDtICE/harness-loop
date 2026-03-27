@@ -1,10 +1,11 @@
 use std::{
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Output},
 };
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use tracing::info;
 
 use crate::paths::normalize_path;
 
@@ -42,74 +43,52 @@ impl WorkspaceManager {
                 isolation,
             }),
             WorkspaceIsolation::GitWorktree => {
-                Self::prepare_git_worktree(&source_workspace, run_root)
+                Self::prepare_git_workspace(&source_workspace, run_root)
             }
         }
     }
 
-    fn prepare_git_worktree(source_workspace: &Path, run_root: &Path) -> Result<PreparedWorkspace> {
+    fn prepare_git_workspace(
+        source_workspace: &Path,
+        _run_root: &Path,
+    ) -> Result<PreparedWorkspace> {
         let repo_root = git_output(source_workspace, ["rev-parse", "--show-toplevel"])
-            .context("failed to locate git repository root for worktree isolation")?;
+            .context("failed to locate git repository root for git workspace execution")?;
         let repo_root = normalize_path(PathBuf::from(repo_root.trim()));
 
-        let relative_workspace = source_workspace
-            .strip_prefix(&repo_root)
-            .unwrap_or_else(|_| Path::new(""));
-        let execution_root = normalize_path(run_root.join("workspace"));
-        let execution_workspace = if relative_workspace.as_os_str().is_empty() {
-            execution_root.clone()
-        } else {
-            normalize_path(execution_root.join(relative_workspace))
-        };
-
-        if execution_root.exists() {
-            bail!(
-                "worktree target {} already exists",
-                execution_root.display()
-            );
-        }
-
-        let status = Command::new("git")
-            .args([
-                "-C",
-                repo_root.to_str().context("repo root is not valid UTF-8")?,
-                "worktree",
-                "add",
-                "--detach",
-                execution_root
-                    .to_str()
-                    .context("execution root is not valid UTF-8")?,
-                "HEAD",
-            ])
-            .status()
-            .context("failed to execute git worktree add")?;
-
-        if !status.success() {
-            bail!("git worktree add failed with status {status}");
-        }
+        info!(
+            source_workspace = %source_workspace.display(),
+            repo_root = %repo_root.display(),
+            execution_workspace = %source_workspace.display(),
+            "using source workspace directly for git-backed execution"
+        );
 
         Ok(PreparedWorkspace {
             source_workspace: source_workspace.to_path_buf(),
-            execution_root,
-            execution_workspace,
+            execution_root: source_workspace.to_path_buf(),
+            execution_workspace: source_workspace.to_path_buf(),
             isolation: WorkspaceIsolation::GitWorktree,
         })
     }
 }
 
 fn git_output(source_workspace: &Path, args: [&str; 2]) -> Result<String> {
-    let output = Command::new("git")
-        .args(["-C"])
-        .arg(source_workspace)
-        .args(args)
-        .output()
-        .context("failed to execute git command")?;
+    let output = git_command(source_workspace, args)?;
 
     if !output.status.success() {
         bail!("git command failed with status {}", output.status);
     }
 
     String::from_utf8(output.stdout).context("git output was not valid UTF-8")
+}
+
+fn git_command<const N: usize>(workspace: &Path, args: [&str; N]) -> Result<Output> {
+    Command::new("git")
+        .args(["-C"])
+        .arg(workspace)
+        .args(args)
+        .output()
+        .context("failed to execute git command")
 }
 
 #[cfg(test)]
@@ -133,7 +112,7 @@ mod tests {
     }
 
     #[test]
-    fn git_worktree_creates_isolated_workspace() {
+    fn git_worktree_uses_source_workspace_directly() {
         let temp = tempdir().expect("tempdir");
         let repo = temp.path().join("repo");
         fs::create_dir_all(&repo).expect("create repo");
@@ -198,8 +177,34 @@ mod tests {
 
         let prepared = WorkspaceManager::prepare(WorkspaceIsolation::GitWorktree, &repo, &run_root)
             .expect("prepare worktree");
-        assert_ne!(prepared.execution_workspace, repo);
-        assert!(prepared.execution_root.exists());
+        assert_eq!(prepared.execution_workspace, repo);
+        assert_eq!(prepared.execution_root, repo);
         assert!(prepared.execution_workspace.join("README.md").exists());
+    }
+
+    #[test]
+    fn git_worktree_uses_source_workspace_before_first_commit() {
+        let temp = tempdir().expect("tempdir");
+        let repo = temp.path().join("repo");
+        fs::create_dir_all(&repo).expect("create repo");
+        fs::write(repo.join("README.md"), "hello\n").expect("write repo file");
+
+        assert!(
+            Command::new("git")
+                .args(["init", repo.to_str().expect("repo path")])
+                .status()
+                .expect("git init")
+                .success()
+        );
+
+        let run_root = repo.join(".harness-runs").join("run");
+        fs::create_dir_all(&run_root).expect("create run root");
+
+        let prepared = WorkspaceManager::prepare(WorkspaceIsolation::GitWorktree, &repo, &run_root)
+            .expect("prepare worktree");
+        assert_eq!(prepared.execution_workspace, repo);
+        assert_eq!(prepared.execution_root, repo);
+        assert!(prepared.execution_workspace.join("README.md").exists());
+        assert!(prepared.execution_workspace.join(".harness-runs").exists());
     }
 }

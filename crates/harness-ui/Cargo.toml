@@ -1,5 +1,5 @@
 [package]
-name = "harness-worker-codex"
+name = "harness-ui"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,13 +7,14 @@ rust-version.workspace = true
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
-libc = "0.2"
+chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
-tracing.workspace = true
 uuid.workspace = true
 harness-core = { path = "../harness-core" }
+harness-worker-codex = { path = "../harness-worker-codex" }
+harness-worker-simulated = { path = "../harness-worker-simulated" }
 
 [dev-dependencies]
 tempfile.workspace = true
