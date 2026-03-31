@@ -118,16 +118,40 @@ export default function App() {
     try {
       const payload = await invoke<WorkspacePayload>("load_workspace", { workspacePath });
       startTransition(() => {
-        setWorkspace(payload);
-        setEditors({
-          requestDraft: "",
-          plannerPrompt: payload.prompts?.effective.planner ?? "",
-          builderPrompt: payload.prompts?.effective.builder ?? "",
-          evaluatorPrompt: payload.prompts?.effective.evaluator ?? "",
+        setWorkspace((current) => {
+          if (!current) return payload;
+          const next = {
+            ...payload,
+            current_run: current.current_run,
+          };
+          if (JSON.stringify(current.record) === JSON.stringify(next.record)
+            && JSON.stringify(current.runs) === JSON.stringify(next.runs)
+            && current.current_run === next.current_run
+            && JSON.stringify(current.prompts) === JSON.stringify(next.prompts)
+            && current.config_error === next.config_error) {
+            return current;
+          }
+          return next;
         });
+        if (announce) {
+          setEditors({
+            requestDraft: "",
+            plannerPrompt: payload.prompts?.effective.planner ?? "",
+            builderPrompt: payload.prompts?.effective.builder ?? "",
+            evaluatorPrompt: payload.prompts?.effective.evaluator ?? "",
+          });
+        }
         setWorkspaces((current) => {
-          const filtered = current.filter(r => r.workspace_path !== payload.record.workspace_path);
-          return [payload.record, ...filtered];
+          const idx = current.findIndex(r => r.workspace_path === payload.record.workspace_path);
+          if (idx >= 0) {
+            if (JSON.stringify(current[idx]) === JSON.stringify(payload.record)) {
+              return current;
+            }
+            const next = [...current];
+            next[idx] = payload.record;
+            return next;
+          }
+          return [...current, payload.record];
         });
       });
       if (announce) {
@@ -161,9 +185,14 @@ export default function App() {
         workspacePath: selectedWorkspacePath,
         runRoot,
       });
-      setWorkspace((current) =>
-        current ? { ...current, current_run: run } : current,
-      );
+      setWorkspace((current) => {
+        if (!current) return current;
+        const prev = current.current_run;
+        if (prev && JSON.stringify(prev) === JSON.stringify(run)) {
+          return current;
+        }
+        return { ...current, current_run: run };
+      });
     } catch (error) {
       setErrorMessage(readError(error));
     }
@@ -290,8 +319,10 @@ export default function App() {
             if (e.key === "Enter" || e.key === " ") goHome();
           }}
         >
-          <p className="eyebrow">{t('app.controlRoom')}</p>
-          <h1>{t('app.title')}</h1>
+          <div className="hero-title-row">
+            <h1>{t('app.title')}</h1>
+            <p className="eyebrow">{t('app.controlRoom')}</p>
+          </div>
           <p className="hero-copy">
             {t('app.subtitle')}
           </p>

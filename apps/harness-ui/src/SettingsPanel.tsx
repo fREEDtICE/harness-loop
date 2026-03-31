@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState } from "react";
+import { PromptEditorModal } from "./ui-components";
 import { useTranslation } from "react-i18next";
 import { parse, stringify } from "smol-toml";
 import { changeLocale } from "./i18n";
@@ -500,6 +501,7 @@ export default function SettingsPanel({
   const [evaluatorPrompt, setEvaluatorPrompt] = useState("");
   const [saving, setSaving] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [editingPrompt, setEditingPrompt] = useState<"planner" | "builder" | "evaluator" | null>(null);
 
   useEffect(() => {
     void loadSettings();
@@ -667,35 +669,20 @@ export default function SettingsPanel({
               <h3>{t('settings.defaultPrompts')}</h3>
               <p className="settings-hint">{t('settings.promptsCopied')}</p>
               <div className="settings-prompt-grid">
-                <div className="settings-prompt-item">
+                <div className="settings-prompt-item" onClick={() => setEditingPrompt("planner")}>
                   <label>{t('settings.planner')}</label>
-                  <textarea
-                    data-testid="settings-prompt-planner"
-                    value={plannerPrompt}
-                    onChange={(e) => setPlannerPrompt(e.target.value)}
-                    rows={8}
-                    spellCheck={false}
-                  />
+                  <span className="prompt-preview">{plannerPrompt || "—"}</span>
+                  <button className="prompt-expand-btn" onClick={(e) => { e.stopPropagation(); setEditingPrompt("planner"); }}>{t('actions.edit')}</button>
                 </div>
-                <div className="settings-prompt-item">
+                <div className="settings-prompt-item" onClick={() => setEditingPrompt("builder")}>
                   <label>{t('settings.builder')}</label>
-                  <textarea
-                    data-testid="settings-prompt-builder"
-                    value={builderPrompt}
-                    onChange={(e) => setBuilderPrompt(e.target.value)}
-                    rows={8}
-                    spellCheck={false}
-                  />
+                  <span className="prompt-preview">{builderPrompt || "—"}</span>
+                  <button className="prompt-expand-btn" onClick={(e) => { e.stopPropagation(); setEditingPrompt("builder"); }}>{t('actions.edit')}</button>
                 </div>
-                <div className="settings-prompt-item">
+                <div className="settings-prompt-item" onClick={() => setEditingPrompt("evaluator")}>
                   <label>{t('settings.evaluator')}</label>
-                  <textarea
-                    data-testid="settings-prompt-evaluator"
-                    value={evaluatorPrompt}
-                    onChange={(e) => setEvaluatorPrompt(e.target.value)}
-                    rows={8}
-                    spellCheck={false}
-                  />
+                  <span className="prompt-preview">{evaluatorPrompt || "—"}</span>
+                  <button className="prompt-expand-btn" onClick={(e) => { e.stopPropagation(); setEditingPrompt("evaluator"); }}>{t('actions.edit')}</button>
                 </div>
               </div>
             </div>
@@ -725,6 +712,19 @@ export default function SettingsPanel({
           </div>
         )}
       </div>
+
+      {editingPrompt ? (
+        <PromptEditorModal
+          title={t(`settings.${editingPrompt}`)}
+          markdown={editingPrompt === "planner" ? plannerPrompt : editingPrompt === "builder" ? builderPrompt : evaluatorPrompt}
+          onChange={(v) => {
+            if (editingPrompt === "planner") setPlannerPrompt(v);
+            else if (editingPrompt === "builder") setBuilderPrompt(v);
+            else setEvaluatorPrompt(v);
+          }}
+          onClose={() => setEditingPrompt(null)}
+        />
+      ) : null}
     </div>
   );
 }

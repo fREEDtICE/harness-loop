@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { PromptOverrides, PromptSnapshot } from "./types";
-import { currentOverrides, emptyOverrides } from "./utils";
-import { PromptEditor } from "./ui-components";
+import { currentOverrides } from "./utils";
+import { PromptEditorModal } from "./ui-components";
 import { useTranslation } from "react-i18next";
 
 export default function NewRunPanel({
@@ -26,6 +26,7 @@ export default function NewRunPanel({
   const [evaluatorPrompt, setEvaluatorPrompt] = useState(promptEffective?.evaluator ?? "");
   const [featureLimit, setFeatureLimit] = useState("");
   const [showPrompts, setShowPrompts] = useState(false);
+  const [editingPrompt, setEditingPrompt] = useState<"planner" | "builder" | "evaluator" | null>(null);
 
   function handleStart() {
     const editors = {
@@ -81,25 +82,22 @@ export default function NewRunPanel({
 
             {showPrompts && (
               <>
-                <div className="prompt-grid">
-                  <PromptEditor
-                    testid="prompt-editor-planner"
-                    title={t('newRun.planner')}
-                    value={plannerPrompt}
-                    onChange={setPlannerPrompt}
-                  />
-                  <PromptEditor
-                    testid="prompt-editor-builder"
-                    title={t('newRun.builder')}
-                    value={builderPrompt}
-                    onChange={setBuilderPrompt}
-                  />
-                  <PromptEditor
-                    testid="prompt-editor-evaluator"
-                    title={t('newRun.evaluator')}
-                    value={evaluatorPrompt}
-                    onChange={setEvaluatorPrompt}
-                  />
+                <div className="settings-prompt-grid">
+                  <div className="settings-prompt-item" onClick={() => setEditingPrompt("planner")}>
+                    <label>{t('newRun.planner')}</label>
+                    <span className="prompt-preview">{plannerPrompt || "—"}</span>
+                    <button className="prompt-expand-btn" onClick={(e) => { e.stopPropagation(); setEditingPrompt("planner"); }}>{t('actions.edit')}</button>
+                  </div>
+                  <div className="settings-prompt-item" onClick={() => setEditingPrompt("builder")}>
+                    <label>{t('newRun.builder')}</label>
+                    <span className="prompt-preview">{builderPrompt || "—"}</span>
+                    <button className="prompt-expand-btn" onClick={(e) => { e.stopPropagation(); setEditingPrompt("builder"); }}>{t('actions.edit')}</button>
+                  </div>
+                  <div className="settings-prompt-item" onClick={() => setEditingPrompt("evaluator")}>
+                    <label>{t('newRun.evaluator')}</label>
+                    <span className="prompt-preview">{evaluatorPrompt || "—"}</span>
+                    <button className="prompt-expand-btn" onClick={(e) => { e.stopPropagation(); setEditingPrompt("evaluator"); }}>{t('actions.edit')}</button>
+                  </div>
                 </div>
                 <button
                   className="secondary-button"
@@ -136,6 +134,19 @@ export default function NewRunPanel({
           </div>
         </div>
       </div>
+
+      {editingPrompt ? (
+        <PromptEditorModal
+          title={t(`newRun.${editingPrompt}`)}
+          markdown={editingPrompt === "planner" ? plannerPrompt : editingPrompt === "builder" ? builderPrompt : evaluatorPrompt}
+          onChange={(v) => {
+            if (editingPrompt === "planner") setPlannerPrompt(v);
+            else if (editingPrompt === "builder") setBuilderPrompt(v);
+            else setEvaluatorPrompt(v);
+          }}
+          onClose={() => setEditingPrompt(null)}
+        />
+      ) : null}
     </div>
   );
 }

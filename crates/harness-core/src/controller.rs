@@ -90,7 +90,7 @@ where
         )?;
         let mut state = RunState {
             run_id,
-            run_title: truncate_title(&request.user_request, 25),
+            run_title: truncate_title(&request.user_request, 50),
             created_at: now,
             updated_at: now,
             run_root: layout.root.clone(),
@@ -223,7 +223,7 @@ where
                 if let Ok(req) = std::fs::read_to_string(&state.request_file) {
                     let trimmed = req.trim();
                     if !trimmed.is_empty() {
-                        state.run_title = truncate_title(trimmed, 25);
+                        state.run_title = truncate_title(trimmed, 50);
                     }
                 }
             }

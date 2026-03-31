@@ -46,6 +46,42 @@ function FileRow({ label, path }: { label: string; path: string }) {
   );
 }
 
+function RequestSection({ requestFile }: { requestFile: string }) {
+  const { t } = useTranslation();
+  const [expanded, setExpanded] = useState(true);
+  const [content, setContent] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!expanded || content !== null || !requestFile) return;
+    invoke<string>("read_stage_log", { path: requestFile })
+      .then(setContent)
+      .catch(() => setContent(""));
+  }, [expanded, content, requestFile]);
+
+  if (!requestFile) return null;
+
+  return (
+    <div className="request-section">
+      <div className="request-header" onClick={() => setExpanded((v) => !v)}>
+        <span className={`artifact-toggle-arrow${expanded ? " open" : ""}`}>▶</span>
+        <span className="request-label">{t('run.request')}</span>
+        <FileLink path={requestFile} />
+      </div>
+      {expanded && (
+        <div className="request-body">
+          {content === null ? (
+            <span className="muted">{t('log.loading')}</span>
+          ) : content ? (
+            <pre className="request-content">{content}</pre>
+          ) : (
+            <span className="muted">{t('log.noOutput')}</span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 type PlanFeature = { id: string; title: string; summary: string; acceptance_criteria: string };
 
 type FeatureContract = {
@@ -886,33 +922,34 @@ export default function RunDetail({
             <span className="live-indicator">{t('run.live')}</span>
           ) : null}
         </div>
-        <p className="workspace-meta">{formatDate(run.created_at)}</p>
-        <p className="workspace-meta">
-          {t('timeline.feature', { current: completedCount, total: run.features.length })}
-        </p>
-        {run.lifecycle === "running" ? (
-          <button
-            className="primary-button"
-            onClick={() => onResume(run.run_root)}
-            disabled={isRunning}
-          >
-            {t('actions.resume')}
-          </button>
-        ) : run.lifecycle !== "completed" ? (
-          <button
-            className="primary-button"
-            data-testid="run-detail-retry"
-            onClick={() => onResume(run.run_root)}
-            disabled={isRunning}
-          >
-            {t('actions.retry')}
-          </button>
-        ) : null}
+        <div className="run-detail-meta-row">
+          <span className="workspace-meta">{formatDate(run.created_at)}</span>
+          <span className="workspace-meta run-detail-feature-status">
+            📦 {t('timeline.feature', { current: completedCount, total: run.features.length })}
+          </span>
+          <span className="run-detail-meta-spacer" />
+          {run.lifecycle === "running" ? (
+            <button
+              className="primary-button compact-button"
+              onClick={() => onResume(run.run_root)}
+              disabled={isRunning}
+            >
+              {t('actions.resume')}
+            </button>
+          ) : run.lifecycle !== "completed" ? (
+            <button
+              className="primary-button compact-button"
+              data-testid="run-detail-retry"
+              onClick={() => onResume(run.run_root)}
+              disabled={isRunning}
+            >
+              {t('actions.retry')}
+            </button>
+          ) : null}
+        </div>
       </div>
 
-      <div className="run-detail-files">
-        <FileRow label={t('run.request')} path={run.request_file} />
-      </div>
+      <RequestSection requestFile={run.request_file} />
 
       <div className="nested-tl">
         {run.plan_stage ? (

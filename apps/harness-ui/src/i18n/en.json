@@ -32,7 +32,8 @@
     "back": "← Back to Timeline",
     "resetDefaults": "Reset to Defaults",
     "revealInFinder": "Reveal in Finder",
-    "backToModelList": "Back to model list"
+    "backToModelList": "Back to model list",
+    "edit": "Edit"
   },
   "newRun": {
     "title": "New Run",

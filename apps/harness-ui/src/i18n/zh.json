@@ -32,7 +32,8 @@
     "back": "← 返回时间线",
     "resetDefaults": "恢复默认值",
     "revealInFinder": "在 Finder 中显示",
-    "backToModelList": "返回模型列表"
+    "backToModelList": "返回模型列表",
+    "edit": "编辑"
   },
   "newRun": {
     "title": "新建运行",
