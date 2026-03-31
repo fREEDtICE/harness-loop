@@ -2,7 +2,7 @@
 root_dir = ".."
 
 [storage]
-runs_dir = ".runs"
+runs_dir = ".loopsmith-runs"
 
 [workspace]
 isolation = "git_worktree"

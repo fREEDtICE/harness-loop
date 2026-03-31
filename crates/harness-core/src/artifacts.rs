@@ -273,7 +273,7 @@ mod tests {
     #[test]
     fn feature_layout_creates_per_feature_directories() {
         let temp = tempdir().expect("tempdir");
-        let store = FileArtifactStore::new(temp.path().join("runs"));
+        let store = FileArtifactStore::new(temp.path().join(".loopsmith-runs"));
         let layout = store.initialize(Uuid::nil()).expect("run layout");
         let feature = layout
             .feature_layout(0, "Feature 01 / Auth")

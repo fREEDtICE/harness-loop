@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use loopsmith_core::{
     artifacts::{FeatureLayout, StageArtifactSet},
-    config::CodexWorkerConfig,
+    config::GeminiWorkerConfig,
     domain::{
         BuilderHandoff, EvaluationRequest, PlanningRequest, QaReport, WorkerResult, WorkerStage,
         WorkerStatus,
@@ -18,12 +18,12 @@ use tokio::process::Command;
 use tokio::time::{Duration, sleep};
 use tracing::{info, warn};
 
-pub struct CodexCliWorker {
-    config: CodexWorkerConfig,
+pub struct GeminiCliWorker {
+    config: GeminiWorkerConfig,
 }
 
-impl CodexCliWorker {
-    pub fn new(config: CodexWorkerConfig) -> Self {
+impl GeminiCliWorker {
+    pub fn new(config: GeminiWorkerConfig) -> Self {
         Self { config }
     }
 
@@ -47,55 +47,14 @@ impl CodexCliWorker {
         fs::write(&artifacts.prompt_file, &prompt)
             .with_context(|| format!("failed to write {}", artifacts.prompt_file.display()))?;
 
-        let command = self.exec_command_for_stage(context, schema_path, &artifacts.output_file);
-        self.execute_command(artifacts, command, &prompt, artifacts.stage)
-            .await
-    }
+        let schema = fs::read_to_string(schema_path)
+            .with_context(|| format!("failed to read schema {}", schema_path.display()))?;
+        let prompt_with_schema = format!(
+            "{prompt}\n\nYou MUST respond with ONLY valid JSON matching this schema:\n{schema}\n"
+        );
 
-    async fn run_repair_stage<T: Serialize>(
-        &self,
-        context: &WorkerContext,
-        feature: &FeatureLayout,
-        artifacts: &StageArtifactSet,
-        template_path: &Path,
-        schema_path: &Path,
-        payload: &T,
-        previous_session_id: Option<&str>,
-    ) -> Result<WorkerResult> {
-        let prompt = render_worker_prompt(
-            context,
-            Some(feature),
-            artifacts.stage,
-            template_path,
-            schema_path,
-            payload,
-        )?;
-        fs::write(&artifacts.prompt_file, &prompt)
-            .with_context(|| format!("failed to write {}", artifacts.prompt_file.display()))?;
-
-        if let Some(session_id) = previous_session_id.filter(|_| self.config.resume_sessions) {
-            info!(
-                stage = artifacts.stage.as_str(),
-                attempt = artifacts.attempt,
-                session_id,
-                workspace = %context.workspace.display(),
-                "resuming codex worker stage from prior session"
-            );
-            let command =
-                self.resume_command_for_stage(context, session_id, &artifacts.output_file);
-            let mut result = self
-                .execute_command(artifacts, command, &prompt, artifacts.stage)
-                .await?;
-
-            if result.session_id.is_none() {
-                result.session_id = Some(session_id.to_string());
-            }
-
-            return Ok(result);
-        }
-
-        let command = self.exec_command_for_stage(context, schema_path, &artifacts.output_file);
-        self.execute_command(artifacts, command, &prompt, artifacts.stage)
+        let command = self.exec_command_for_stage(context);
+        self.execute_command(artifacts, command, &prompt_with_schema, artifacts.stage)
             .await
     }
 
@@ -115,7 +74,7 @@ impl CodexCliWorker {
             output_file = %artifacts.output_file.display(),
             stdout_log = %artifacts.stdout_log.display(),
             stderr_log = %artifacts.stderr_log.display(),
-            "starting codex worker stage"
+            "starting gemini worker stage"
         );
 
         let mut process = Command::new(&self.config.binary);
@@ -139,17 +98,17 @@ impl CodexCliWorker {
             stdin
                 .write_all(prompt.as_bytes())
                 .await
-                .context("failed to write prompt to codex stdin")?;
+                .context("failed to write prompt to gemini stdin")?;
         }
 
         let child_stdout = child
             .stdout
             .take()
-            .context("failed to capture codex stdout")?;
+            .context("failed to capture gemini stdout")?;
         let child_stderr = child
             .stderr
             .take()
-            .context("failed to capture codex stderr")?;
+            .context("failed to capture gemini stderr")?;
 
         let stdout_log_path = artifacts.stdout_log.clone();
         let stderr_log_path = artifacts.stderr_log.clone();
@@ -168,11 +127,11 @@ impl CodexCliWorker {
         let stdout_bytes = stdout_handle
             .await
             .context("stdout tee task panicked")?
-            .context("failed to stream codex stdout")?;
+            .context("failed to stream gemini stdout")?;
         let stderr_bytes = stderr_handle
             .await
             .context("stderr tee task panicked")?
-            .context("failed to stream codex stderr")?;
+            .context("failed to stream gemini stderr")?;
 
         #[cfg(unix)]
         let cleanup_result = cleanup_process_group(child_pid).await;
@@ -202,7 +161,7 @@ impl CodexCliWorker {
             attempt = artifacts.attempt,
             status = %status,
             session_id = session_id.as_deref().unwrap_or("-"),
-            "completed codex worker stage"
+            "completed gemini worker stage"
         );
 
         if !status.success() {
@@ -220,6 +179,9 @@ impl CodexCliWorker {
             );
         }
 
+        fs::write(&artifacts.output_file, &stdout_bytes)
+            .with_context(|| format!("failed to write {}", artifacts.output_file.display()))?;
+
         Ok(WorkerResult {
             stage,
             status: WorkerStatus::Executed,
@@ -233,80 +195,19 @@ impl CodexCliWorker {
         })
     }
 
-    fn exec_command_for_stage(
-        &self,
-        context: &WorkerContext,
-        schema_path: &Path,
-        output_file: &Path,
-    ) -> Vec<String> {
-        let mut command = vec![
+    fn exec_command_for_stage(&self, context: &WorkerContext) -> Vec<String> {
+        vec![
             self.config.binary.clone(),
-            "-a".to_string(),
-            "never".to_string(),
-            "exec".to_string(),
-            "--json".to_string(),
-            "-C".to_string(),
-            context.workspace.display().to_string(),
-            "-m".to_string(),
+            "-p".to_string(),
+            "-".to_string(),
+            "--model".to_string(),
             self.config.model.clone(),
-            "-s".to_string(),
+            "--sandbox".to_string(),
             self.config.sandbox.clone(),
-        ];
-
-        if self.config.full_auto {
-            command.push("--full-auto".to_string());
-        }
-
-        if self.config.skip_git_repo_check {
-            command.push("--skip-git-repo-check".to_string());
-        }
-
-        command.extend([
-            "--output-schema".to_string(),
-            schema_path.display().to_string(),
-            "-o".to_string(),
-            output_file.display().to_string(),
-            "-".to_string(),
-        ]);
-
-        command
-    }
-
-    fn resume_command_for_stage(
-        &self,
-        context: &WorkerContext,
-        session_id: &str,
-        output_file: &Path,
-    ) -> Vec<String> {
-        let mut command = vec![
-            self.config.binary.clone(),
-            "-a".to_string(),
-            "never".to_string(),
-            "exec".to_string(),
+            "--json".to_string(),
             "-C".to_string(),
             context.workspace.display().to_string(),
-            "resume".to_string(),
-            "--json".to_string(),
-            "-m".to_string(),
-            self.config.model.clone(),
-        ];
-
-        if self.config.full_auto {
-            command.push("--full-auto".to_string());
-        }
-
-        if self.config.skip_git_repo_check {
-            command.push("--skip-git-repo-check".to_string());
-        }
-
-        command.extend([
-            "-o".to_string(),
-            output_file.display().to_string(),
-            session_id.to_string(),
-            "-".to_string(),
-        ]);
-
-        command
+        ]
     }
 }
 
@@ -366,7 +267,7 @@ async fn cleanup_process_group(pid: Option<u32>) -> Result<bool> {
         sleep(Duration::from_millis(20)).await;
     }
 
-    anyhow::bail!("codex worker process group {pid} remained alive after cleanup")
+    anyhow::bail!("gemini worker process group {pid} remained alive after cleanup")
 }
 
 #[cfg(unix)]
@@ -381,7 +282,7 @@ fn process_group_exists(pid: u32) -> Result<bool> {
     match err.raw_os_error() {
         Some(libc::ESRCH) => Ok(false),
         Some(libc::EPERM) => Ok(true),
-        _ => Err(err).with_context(|| format!("failed to probe codex worker process group {pid}")),
+        _ => Err(err).with_context(|| format!("failed to probe gemini worker process group {pid}")),
     }
 }
 
@@ -399,7 +300,7 @@ fn send_signal(pid: u32, signal: libc::c_int) -> Result<()> {
     }
 
     Err(err).with_context(|| {
-        format!("failed to deliver signal {signal} to codex worker process group {pid}")
+        format!("failed to deliver signal {signal} to gemini worker process group {pid}")
     })
 }
 
@@ -415,7 +316,7 @@ fn log_cleanup_result(
             stage = stage.as_str(),
             attempt,
             pid = pid.unwrap_or_default(),
-            "cleaned up lingering codex worker descendant processes"
+            "cleaned up lingering gemini worker descendant processes"
         ),
         Ok(false) => {}
         Err(error) => warn!(
@@ -423,13 +324,13 @@ fn log_cleanup_result(
             attempt,
             pid = pid.unwrap_or_default(),
             error = %error,
-            "failed to clean up codex worker descendant processes"
+            "failed to clean up gemini worker descendant processes"
         ),
     }
 }
 
 #[async_trait]
-impl WorkerAdapter for CodexCliWorker {
+impl WorkerAdapter for GeminiCliWorker {
     async fn plan(
         &self,
         context: &WorkerContext,
@@ -491,7 +392,7 @@ impl WorkerAdapter for CodexCliWorker {
         contract: &loopsmith_core::domain::FeatureContract,
         builder_handoff: &BuilderHandoff,
         qa_report: &QaReport,
-        previous_session_id: Option<&str>,
+        _previous_session_id: Option<&str>,
     ) -> Result<WorkerResult> {
         #[derive(Serialize)]
         struct RepairPayload<'a> {
@@ -506,14 +407,13 @@ impl WorkerAdapter for CodexCliWorker {
             qa_report,
         };
 
-        self.run_repair_stage(
+        self.run_exec_stage(
             context,
-            feature,
+            Some(feature),
             artifacts,
             &context.builder_prompt,
             &context.builder_schema,
             &payload,
-            previous_session_id,
         )
         .await
     }
@@ -547,7 +447,7 @@ fn format_stage_failure(
     session_id: Option<&str>,
 ) -> String {
     let mut message = format!(
-        "codex stage {} failed with status {}",
+        "gemini stage {} failed with status {}",
         stage.as_str(),
         status
     );
@@ -627,24 +527,7 @@ fn truncate_start(value: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        fs,
-        path::{Path, PathBuf},
-        process::{Command as StdCommand, Stdio as StdStdio},
-        time::Duration,
-    };
-
-    use anyhow::Result;
-    use loopsmith_core::{
-        artifacts::{FileArtifactStore, RunLayout},
-        config::CodexWorkerConfig,
-        domain::{PlanningRequest, WorkerStage},
-        worker::{WorkerAdapter, WorkerContext},
-    };
-    use tempfile::tempdir;
-    use uuid::Uuid;
-
-    use super::{CodexCliWorker, extract_session_id, render_output_excerpt};
+    use super::extract_session_id;
 
     #[test]
     fn extract_session_id_from_jsonl_stdout() {
@@ -660,210 +543,7 @@ mod tests {
     }
 
     #[test]
-    fn resume_command_places_exec_cd_before_resume_subcommand() {
-        let worker = CodexCliWorker::new(CodexWorkerConfig {
-            binary: "codex".to_string(),
-            model: "gpt-5.4".to_string(),
-            sandbox: "workspace-write".to_string(),
-            full_auto: true,
-            skip_git_repo_check: true,
-            resume_sessions: true,
-        });
-        let context = WorkerContext {
-            run_id: Uuid::nil(),
-            workspace: PathBuf::from("/tmp/workspace"),
-            layout: RunLayout {
-                root: PathBuf::from("/tmp/run"),
-                inputs_dir: PathBuf::from("/tmp/run/inputs"),
-                prompt_inputs_dir: PathBuf::from("/tmp/run/inputs/prompts"),
-                planner_prompt_file: PathBuf::from("/tmp/run/inputs/prompts/planner.md"),
-                builder_prompt_file: PathBuf::from("/tmp/run/inputs/prompts/builder.md"),
-                evaluator_prompt_file: PathBuf::from("/tmp/run/inputs/prompts/evaluator.md"),
-                launch_file: PathBuf::from("/tmp/run/launch.json"),
-                request_file: PathBuf::from("/tmp/run/request.md"),
-                plan_file: PathBuf::from("/tmp/run/plan.json"),
-                runtime_plan_file: PathBuf::from("/tmp/run/runtime-plan.json"),
-                state_file: PathBuf::from("/tmp/run/run-state.json"),
-                manifest_file: PathBuf::from("/tmp/run/manifest.json"),
-                features_dir: PathBuf::from("/tmp/run/features"),
-                worker_dir: PathBuf::from("/tmp/run/worker"),
-            },
-            planner_prompt: PathBuf::from("/tmp/prompts/planner.md"),
-            builder_prompt: PathBuf::from("/tmp/prompts/builder.md"),
-            evaluator_prompt: PathBuf::from("/tmp/prompts/evaluator.md"),
-            planner_schema: PathBuf::from("/tmp/schemas/plan.json"),
-            builder_schema: PathBuf::from("/tmp/schemas/build.json"),
-            qa_schema: PathBuf::from("/tmp/schemas/qa.json"),
-        };
-
-        let command = worker.resume_command_for_stage(
-            &context,
-            "session-123",
-            Path::new("/tmp/run/worker/outputs/repair-01-last-message.json"),
-        );
-        let cd_index = command.iter().position(|arg| arg == "-C").unwrap();
-        let resume_index = command.iter().position(|arg| arg == "resume").unwrap();
-
-        assert!(cd_index < resume_index);
-        assert_eq!(command[cd_index + 1], "/tmp/workspace");
-    }
-
-    #[test]
-    fn render_output_excerpt_keeps_tail_for_debugging() {
-        let output = (0..30)
-            .map(|index| format!("line-{index}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        let excerpt = render_output_excerpt(output.as_bytes());
-
-        assert!(!excerpt.contains("line-0"));
-        assert!(excerpt.contains("line-29"));
-        assert!(excerpt.contains("line-10"));
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn plan_stage_cleans_up_spawned_descendants() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt;
-
-        struct PidGuard(Option<u32>);
-
-        impl Drop for PidGuard {
-            fn drop(&mut self) {
-                if let Some(pid) = self.0.take() {
-                    let _ = StdCommand::new("kill")
-                        .arg("-KILL")
-                        .arg(pid.to_string())
-                        .stdout(StdStdio::null())
-                        .stderr(StdStdio::null())
-                        .status();
-                }
-            }
-        }
-
-        let temp = tempdir()?;
-        let workspace = temp.path().join("workspace");
-        fs::create_dir_all(&workspace)?;
-
-        let prompts_dir = temp.path().join("prompts");
-        let schemas_dir = temp.path().join("schemas");
-        fs::create_dir_all(&prompts_dir)?;
-        fs::create_dir_all(&schemas_dir)?;
-        fs::write(prompts_dir.join("planner.md"), "planner prompt\n")?;
-        fs::write(prompts_dir.join("builder.md"), "builder prompt\n")?;
-        fs::write(prompts_dir.join("evaluator.md"), "evaluator prompt\n")?;
-        fs::write(schemas_dir.join("planner.json"), "{}\n")?;
-        fs::write(schemas_dir.join("builder.json"), "{}\n")?;
-        fs::write(schemas_dir.join("qa.json"), "{}\n")?;
-
-        let pid_file = temp.path().join("codex-descendant.pid");
-        let script_path = temp.path().join("fake-codex.sh");
-        fs::write(
-            &script_path,
-            format!(
-                r#"#!/bin/sh
-set -eu
-OUTPUT=""
-PREV=""
-for ARG in "$@"; do
-  if [ "$PREV" = "o" ]; then
-    OUTPUT="$ARG"
-    PREV=""
-    continue
-  fi
-  if [ "$ARG" = "-o" ]; then
-    PREV="o"
-  fi
-done
-cat >/dev/null
-nohup /bin/sh -c 'echo $$ > "{pid_file}"; trap "exit 0" TERM INT; while true; do sleep 1; done' >/dev/null 2>&1 &
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-  [ -f "{pid_file}" ] && break
-  sleep 0.05
-done
-if [ -n "$OUTPUT" ]; then
-  printf '{{"ok":true}}\n' > "$OUTPUT"
-fi
-printf '%s\n' '{{"type":"thread.started","thread_id":"session-123"}}'
-"#,
-                pid_file = pid_file.display(),
-            ),
-        )?;
-        let mut permissions = fs::metadata(&script_path)?.permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&script_path, permissions)?;
-
-        let store = FileArtifactStore::new(temp.path().join(".loopsmith-runs"));
-        let layout = store.initialize(Uuid::new_v4())?;
-        let context = WorkerContext {
-            run_id: Uuid::nil(),
-            workspace,
-            layout: layout.clone(),
-            planner_prompt: prompts_dir.join("planner.md"),
-            builder_prompt: prompts_dir.join("builder.md"),
-            evaluator_prompt: prompts_dir.join("evaluator.md"),
-            planner_schema: schemas_dir.join("planner.json"),
-            builder_schema: schemas_dir.join("builder.json"),
-            qa_schema: schemas_dir.join("qa.json"),
-        };
-        let artifacts = layout.stage_artifacts(WorkerStage::Plan, 1);
-        let worker = CodexCliWorker::new(CodexWorkerConfig {
-            binary: script_path.display().to_string(),
-            model: "gpt-5.4".to_string(),
-            sandbox: "workspace-write".to_string(),
-            full_auto: true,
-            skip_git_repo_check: true,
-            resume_sessions: true,
-        });
-
-        let result = worker
-            .plan(
-                &context,
-                &artifacts,
-                &PlanningRequest {
-                    user_request: "Build a harness".to_string(),
-                    feature_limit: 1,
-                    feature_limit_is_hard: false,
-                    service_names: Vec::new(),
-                    verification_commands: Vec::new(),
-                },
-            )
-            .await?;
-        assert_eq!(result.session_id.as_deref(), Some("session-123"));
-
-        let mut descendant_pid = None;
-        for _ in 0..20 {
-            if pid_file.exists() {
-                descendant_pid = Some(fs::read_to_string(&pid_file)?.trim().parse::<u32>()?);
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(25));
-        }
-        let descendant_pid = descendant_pid.expect("expected descendant pid file");
-        let mut guard = PidGuard(Some(descendant_pid));
-
-        let mut exited = false;
-        for _ in 0..20 {
-            let status = StdCommand::new("kill")
-                .arg("-0")
-                .arg(descendant_pid.to_string())
-                .stdout(StdStdio::null())
-                .stderr(StdStdio::null())
-                .status()?;
-            if !status.success() {
-                exited = true;
-                guard.0 = None;
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(25));
-        }
-
-        assert!(
-            exited,
-            "expected codex worker descendant process {descendant_pid} to exit during cleanup"
-        );
-
-        Ok(())
+    fn extract_session_id_returns_none_for_empty_stdout() {
+        assert_eq!(extract_session_id(b""), None);
     }
 }

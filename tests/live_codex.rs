@@ -17,7 +17,7 @@ fn live_codex_harness_round_trip_passes_when_enabled() -> Result<(), Box<dyn Err
 
     let temp = tempdir()?;
     let workspace = temp.path().join("workspace");
-    let runs_dir = temp.path().join("runs");
+    let runs_dir = temp.path().join(".loopsmith-runs");
     let request_file = temp.path().join("request.md");
     let config_path = temp.path().join("live.toml");
 
@@ -84,7 +84,7 @@ commands = [
         ),
     )?;
 
-    let output = Command::new(env!("CARGO_BIN_EXE_codex-harness-rs"))
+    let output = Command::new(env!("CARGO_BIN_EXE_loopsmith"))
         .current_dir(manifest_dir())
         .arg("run")
         .arg("--config")
@@ -128,7 +128,7 @@ fn live_codex_planner_override_passes_when_enabled() -> Result<(), Box<dyn Error
 
     let temp = tempdir()?;
     let workspace = temp.path().join("workspace");
-    let runs_dir = temp.path().join("runs");
+    let runs_dir = temp.path().join(".loopsmith-runs");
     let request_file = temp.path().join("request.md");
     let config_path = temp.path().join("live-planner.toml");
 
@@ -202,7 +202,7 @@ commands = [
         ),
     )?;
 
-    let output = Command::new(env!("CARGO_BIN_EXE_codex-harness-rs"))
+    let output = Command::new(env!("CARGO_BIN_EXE_loopsmith"))
         .current_dir(manifest_dir())
         .arg("run")
         .arg("--config")

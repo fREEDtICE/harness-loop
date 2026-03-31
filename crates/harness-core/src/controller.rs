@@ -10,8 +10,8 @@ use crate::{
     config::ResolvedConfig,
     domain::{
         ActiveRunStage, FeatureContract, FeatureLifecycleStatus, FeaturePhase, FeatureRunState,
-        PlanningRequest, PromptSnapshot, QaStatus, RunLaunchSnapshot, RunLifecycleStatus,
-        RunRequest, RunStageRecord, RunState, WorkerStage,
+        PlanDocument, PlanningRequest, PromptSnapshot, QaStatus, RunLaunchSnapshot,
+        RunLifecycleStatus, RunRequest, RunStageRecord, RunState, WorkerStage,
     },
     evaluator::build_evaluation_request,
     runtime::{RuntimePlan, RuntimeSupervisor, run_screenshot_commands, run_verification_commands},
@@ -90,6 +90,7 @@ where
         )?;
         let mut state = RunState {
             run_id,
+            run_title: truncate_title(&request.user_request, 25),
             created_at: now,
             updated_at: now,
             run_root: layout.root.clone(),
@@ -137,6 +138,8 @@ where
                         layout.state_file.display()
                     )
                 })?;
+
+        state.backfill_log_paths();
 
         if state.lifecycle == RunLifecycleStatus::Passed {
             return Ok(state);
@@ -200,14 +203,32 @@ where
     pub fn inspect_run(&self, run_root: impl AsRef<Path>) -> Result<RunState> {
         let run_root = run_root.as_ref();
         let layout = self.layout_from_run_root(run_root);
-        self.artifacts
+        let mut state: RunState = self
+            .artifacts
             .read_json(&layout.state_file)
             .with_context(|| {
                 format!(
                     "failed to load run state from {}",
                     layout.state_file.display()
                 )
-            })
+            })?;
+        state.backfill_log_paths();
+        if state.run_title.is_empty() {
+            if let Ok(plan) = self.artifacts.read_json::<PlanDocument>(&state.plan_file) {
+                if !plan.goal.is_empty() {
+                    state.run_title = truncate_title(&plan.goal, 50);
+                }
+            }
+            if state.run_title.is_empty() {
+                if let Ok(req) = std::fs::read_to_string(&state.request_file) {
+                    let trimmed = req.trim();
+                    if !trimmed.is_empty() {
+                        state.run_title = truncate_title(trimmed, 25);
+                    }
+                }
+            }
+        }
+        Ok(state)
     }
 
     async fn ensure_plan(
@@ -262,6 +283,8 @@ where
             attempt: plan_artifacts.attempt,
             status: plan_result.status,
             artifact: plan_artifacts.result_file.clone(),
+            stdout_log: plan_artifacts.stdout_log.clone(),
+            stderr_log: plan_artifacts.stderr_log.clone(),
             session_id: plan_result.session_id.clone(),
         });
 
@@ -275,6 +298,8 @@ where
                 )
             })?;
         self.artifacts.write_json(&layout.plan_file, &plan)?;
+
+        state.run_title = truncate_title(&plan.goal, 50);
 
         state.features.clear();
         for (index, feature) in plan.features.iter().enumerate() {
@@ -369,6 +394,8 @@ where
                         attempt: build_artifacts.attempt,
                         status: build_result.status,
                         artifact: build_artifacts.result_file.clone(),
+                        stdout_log: build_artifacts.stdout_log.clone(),
+                        stderr_log: build_artifacts.stderr_log.clone(),
                         session_id: build_result.session_id.clone(),
                     });
 
@@ -453,6 +480,8 @@ where
                         attempt: evaluate_artifacts.attempt,
                         status: evaluate_result.status,
                         artifact: evaluate_artifacts.result_file.clone(),
+                        stdout_log: evaluate_artifacts.stdout_log.clone(),
+                        stderr_log: evaluate_artifacts.stderr_log.clone(),
                         session_id: evaluate_result.session_id.clone(),
                     });
 
@@ -590,6 +619,8 @@ where
                         attempt: repair_artifacts.attempt,
                         status: repair_result.status,
                         artifact: repair_artifacts.result_file.clone(),
+                        stdout_log: repair_artifacts.stdout_log.clone(),
+                        stderr_log: repair_artifacts.stderr_log.clone(),
                         session_id: repair_result.session_id.clone(),
                     });
 
@@ -976,7 +1007,7 @@ mod tests {
         config::{
             CodexWorkerConfig, EvaluatorConfig, ResolvedConfig, ResolvedPromptConfig,
             ResolvedSchemaConfig, ResolvedStorageConfig, RuntimeConfig, RuntimeSupervisionConfig,
-            ServiceConfig, SimulationWorkerConfig, WorkerConfig, WorkerKind, WorkspaceConfig,
+            ServiceConfig, SimulationWorkerConfig, WorkerConfig, WorkerSelection, WorkspaceConfig,
         },
         domain::{
             ActiveRunStage, BuilderHandoff, EvaluationRequest, Feature, FeatureContract,
@@ -1118,7 +1149,7 @@ mod tests {
         let source_workspace = temp.path().join("workspace");
         fs::create_dir_all(&source_workspace)?;
 
-        let config = resolved_config(temp.path(), temp.path().join("runs"));
+        let config = resolved_config(temp.path(), temp.path().join(".loopsmith-runs"));
         let artifacts = FileArtifactStore::new(config.storage.runs_dir.clone());
         let shared_state = Arc::new(Mutex::new(FakeState::default()));
         let worker = FakeWorker {
@@ -1167,7 +1198,7 @@ mod tests {
         let config_file = temp.path().join("config.toml");
         fs::write(&config_file, "feature_limit = 2\n")?;
 
-        let config = resolved_config(temp.path(), temp.path().join("runs"));
+        let config = resolved_config(temp.path(), temp.path().join(".loopsmith-runs"));
         let artifacts = FileArtifactStore::new(config.storage.runs_dir.clone());
         let worker = FakeWorker {
             state: Arc::new(Mutex::new(FakeState::default())),
@@ -1221,7 +1252,7 @@ mod tests {
         let source_workspace = temp.path().join("workspace");
         fs::create_dir_all(&source_workspace)?;
 
-        let config = resolved_config(temp.path(), temp.path().join("runs"));
+        let config = resolved_config(temp.path(), temp.path().join(".loopsmith-runs"));
         let artifacts = FileArtifactStore::new(config.storage.runs_dir.clone());
         let worker = FakeWorker {
             state: Arc::new(Mutex::new(FakeState::default())),
@@ -1253,7 +1284,7 @@ mod tests {
         let temp = tempdir()?;
         let run_root = temp.path().join("run");
         fs::create_dir_all(&run_root)?;
-        let config = resolved_config(temp.path(), temp.path().join("runs"));
+        let config = resolved_config(temp.path(), temp.path().join(".loopsmith-runs"));
         let artifacts = FileArtifactStore::new(config.storage.runs_dir.clone());
         let controller = HarnessController::new(
             config,
@@ -1265,6 +1296,7 @@ mod tests {
 
         let state = RunState {
             run_id: Uuid::nil(),
+            run_title: String::new(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
             run_root: run_root.clone(),
@@ -1285,6 +1317,8 @@ mod tests {
                 attempt: 1,
                 status: WorkerStatus::Prepared,
                 artifact: run_root.join("worker/plan-01-result.json"),
+                stdout_log: run_root.join("worker/logs/plan-01-stdout.log"),
+                stderr_log: run_root.join("worker/logs/plan-01-stderr.log"),
                 session_id: None,
             }),
             features: Vec::new(),
@@ -1335,19 +1369,12 @@ mod tests {
                 isolation: WorkspaceIsolation::Direct,
             },
             worker: WorkerConfig {
-                kind: WorkerKind::Simulated,
-                codex: Some(CodexWorkerConfig {
-                    binary: "codex".to_string(),
-                    model: "gpt-5.4".to_string(),
-                    sandbox: "workspace-write".to_string(),
-                    full_auto: true,
-                    skip_git_repo_check: true,
-                    resume_sessions: true,
-                }),
-                simulation: Some(SimulationWorkerConfig {
-                    evaluator_statuses: vec![QaStatus::Pass],
-                    session_prefix: "sim".to_string(),
-                }),
+                selection: WorkerSelection::Simulated {
+                    simulation: SimulationWorkerConfig {
+                        evaluator_statuses: vec![QaStatus::Pass],
+                        session_prefix: "sim".to_string(),
+                    },
+                },
                 planner: None,
             },
             prompts: ResolvedPromptConfig {
@@ -1363,6 +1390,7 @@ mod tests {
             runtime: RuntimeConfig {
                 feature_limit: 2,
                 max_repair_attempts: 1,
+                continue_after_failure: false,
                 supervision: RuntimeSupervisionConfig::default(),
                 services: vec![ServiceConfig {
                     name: "web".to_string(),
@@ -1380,5 +1408,16 @@ mod tests {
                 screenshots: Vec::new(),
             },
         }
+    }
+}
+
+fn truncate_title(text: &str, max_chars: usize) -> String {
+    let trimmed = text.trim();
+    let first_line = trimmed.lines().next().unwrap_or(trimmed);
+    if first_line.chars().count() <= max_chars {
+        first_line.to_string()
+    } else {
+        let truncated: String = first_line.chars().take(max_chars).collect();
+        format!("{truncated}…")
     }
 }

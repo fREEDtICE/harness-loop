@@ -87,19 +87,18 @@ export type UIStateSnapshot = {
 };
 
 export type UIStateReporterProps = {
-  profiles: {
+  workspaces: {
     workspace_path: string;
     display_name: string;
     pinned: boolean;
-    last_run_root: string | null;
   }[];
   selectedWorkspacePath: string | null;
   workspace: {
-    profile: {
+    record: {
       workspace_path: string;
       display_name: string;
-      preferred_config_path: string | null;
     };
+    config_path: string;
     prompts: {
       defaults: { planner: string; builder: string; evaluator: string };
       effective: { planner: string; builder: string; evaluator: string };
@@ -138,7 +137,6 @@ export type UIStateReporterProps = {
     config_error: string | null;
   } | null;
   editors: {
-    configPath: string;
     requestDraft: string;
     plannerPrompt: string;
     builderPrompt: string;
@@ -157,7 +155,7 @@ function basename(path: string): string {
 
 function buildSnapshot(props: UIStateReporterProps): UIStateSnapshot {
   const {
-    profiles,
+    workspaces,
     selectedWorkspacePath,
     workspace,
     editors,
@@ -175,20 +173,20 @@ function buildSnapshot(props: UIStateReporterProps): UIStateSnapshot {
     panels: {
       sidebar: {
         visible: true,
-        workspaceCount: profiles.length,
-        workspaces: profiles.map((p) => ({
+        workspaceCount: workspaces.length,
+        workspaces: workspaces.map((p) => ({
           testid: `sidebar-workspace-${basename(p.workspace_path)}`,
           displayName: p.display_name,
           workspacePath: p.workspace_path,
           selected: selectedWorkspacePath === p.workspace_path,
           pinned: p.pinned,
-          lastRunRoot: p.last_run_root,
+          lastRunRoot: null,
         })),
       },
       launch: {
         visible: hasWorkspace,
-        title: workspace?.profile.display_name ?? null,
-        configPath: editors?.configPath ?? "",
+        title: workspace?.record.display_name ?? null,
+        configPath: workspace?.config_path ?? "",
         requestDraft: editors?.requestDraft ?? "",
         hasConfigError: workspace?.config_error !== null && workspace?.config_error !== undefined,
         configError: workspace?.config_error ?? null,

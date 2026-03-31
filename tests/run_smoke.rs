@@ -625,11 +625,11 @@ fn simulated_cli_git_worktree_journey_runs_in_place_when_runs_dir_is_inside_work
     fs::write(
         &fixture.config_path,
         fs::read_to_string(&fixture.config_path)?.replace(
-            "runs_dir = \"runs\"",
-            "runs_dir = \"workspace/.harness-runs\"",
+            "runs_dir = \".loopsmith-runs\"",
+            "runs_dir = \"workspace/.loopsmith-runs\"",
         ),
     )?;
-    fixture.runs_dir = fixture.workspace_dir.join(".harness-runs");
+    fixture.runs_dir = fixture.workspace_dir.join(".loopsmith-runs");
     fs::write(fixture.workspace_dir.join("README.md"), "workspace\n")?;
     run_ok(
         Command::new("git").arg("init").arg(&fixture.workspace_dir),
@@ -662,7 +662,7 @@ fn simulated_cli_run_fails_with_a_clear_config_error() -> Result<(), Box<dyn Err
 root_dir = ".."
 
 [storage]
-runs_dir = "runs"
+runs_dir = ".loopsmith-runs"
 
 [workspace]
 isolation = "direct"
@@ -697,7 +697,7 @@ commands = [
     let output = fixture.run("Surface the config validation error.\n", None)?;
     fixture.assert_failure_contains(
         &output,
-        "worker.kind is simulated but [worker.simulation] is missing",
+        "missing field `simulation`",
     )?;
 
     Ok(())
@@ -713,7 +713,7 @@ fn simulated_cli_run_fails_with_a_missing_codex_worker_config() -> Result<(), Bo
 root_dir = ".."
 
 [storage]
-runs_dir = "runs"
+runs_dir = ".loopsmith-runs"
 
 [workspace]
 isolation = "direct"
@@ -748,7 +748,7 @@ commands = [
     let output = fixture.run("Surface the missing codex worker configuration.\n", None)?;
     fixture.assert_failure_contains(
         &output,
-        "worker.kind is codex_cli but [worker.codex] is missing",
+        "missing field `codex`",
     )?;
 
     Ok(())
@@ -1719,7 +1719,7 @@ impl SmokeFixture {
         let prompts_dir = project_root.join("prompts");
         let schemas_dir = project_root.join("schemas");
         let workspace_dir = project_root.join("workspace");
-        let runs_dir = project_root.join("runs");
+        let runs_dir = project_root.join(".loopsmith-runs");
 
         for dir in [
             &config_dir,
@@ -1794,7 +1794,7 @@ shutdown_grace_period_secs = {}
 root_dir = ".."
 
 [storage]
-runs_dir = "runs"
+runs_dir = ".loopsmith-runs"
 
 [workspace]
 isolation = "{}"
@@ -1921,7 +1921,7 @@ commands = [
     fn run(&self, request: &str, feature_limit: Option<usize>) -> Result<Output, Box<dyn Error>> {
         fs::write(&self.request_file, request)?;
 
-        let mut command = Command::new(env!("CARGO_BIN_EXE_codex-harness-rs"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_loopsmith"));
         command
             .current_dir(&self.project_root)
             .arg("run")
@@ -1940,7 +1940,7 @@ commands = [
     }
 
     fn resume(&self, run_root: &Path) -> Result<Output, Box<dyn Error>> {
-        Ok(Command::new(env!("CARGO_BIN_EXE_codex-harness-rs"))
+        Ok(Command::new(env!("CARGO_BIN_EXE_loopsmith"))
             .current_dir(&self.project_root)
             .arg("resume")
             .arg("--config")
@@ -1951,7 +1951,7 @@ commands = [
     }
 
     fn inspect(&self, run_root: &Path) -> Result<Output, Box<dyn Error>> {
-        Ok(Command::new(env!("CARGO_BIN_EXE_codex-harness-rs"))
+        Ok(Command::new(env!("CARGO_BIN_EXE_loopsmith"))
             .current_dir(&self.project_root)
             .arg("inspect")
             .arg("--config")

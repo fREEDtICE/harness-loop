@@ -1,5 +1,5 @@
 [package]
-name = "harness-worker-simulated"
+name = "loopsmith-worker-simulated"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,4 +9,4 @@ anyhow.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-harness-core = { path = "../harness-core" }
+loopsmith-core = { path = "../harness-core" }

@@ -6,12 +6,9 @@ use std::{
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use harness_core::{
+use loopsmith_core::{
     artifacts::{FileArtifactStore, StageArtifactSet},
-    config::{
-        AppConfig, CodexWorkerConfig, PlannerWorkerConfig, ResolvedConfig, SimulationWorkerConfig,
-        WorkerKind,
-    },
+    config::{AppConfig, PlannerWorkerConfig, ResolvedConfig, WorkerSelection},
     domain::{
         BuilderHandoff, EvaluationRequest, FeatureContract, PromptOverrides, PromptSnapshot,
         QaReport, QaStatus, RunLifecycleStatus, RunRequest, RunState,
@@ -19,11 +16,12 @@ use harness_core::{
     paths::normalize_path,
     worker::{WorkerAdapter, WorkerContext},
 };
-use harness_worker_codex::CodexCliWorker;
-use harness_worker_simulated::SimulatedWorker;
+use loopsmith_worker_claude::ClaudeCliWorker;
+use loopsmith_worker_codex::CodexCliWorker;
+use loopsmith_worker_gemini::GeminiCliWorker;
+use loopsmith_worker_simulated::SimulatedWorker;
 use serde::{Deserialize, Serialize};
 
-/// Draft launch inputs captured by the UI before a run starts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LaunchDraft {
     pub workspace_path: PathBuf,
@@ -33,7 +31,6 @@ pub struct LaunchDraft {
     pub feature_limit: Option<usize>,
 }
 
-/// Launch inputs after validation and prompt resolution.
 #[derive(Debug, Clone)]
 pub struct PreparedLaunch {
     pub config_path: PathBuf,
@@ -42,17 +39,17 @@ pub struct PreparedLaunch {
     run_request: RunRequest,
 }
 
-/// Run summary model used by workspace and history views.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceRunSummary {
     pub run_root: PathBuf,
+    pub run_title: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub lifecycle: RunLifecycleStatus,
     pub final_status: Option<QaStatus>,
     pub current_feature_index: usize,
     pub total_features: usize,
-    pub active_stage: Option<harness_core::domain::ActiveRunStage>,
+    pub active_stage: Option<loopsmith_core::domain::ActiveRunStage>,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -139,11 +136,7 @@ impl HarnessUiService {
         let run_root = normalize_path(run_root.as_ref().to_path_buf());
         let resolved_config = AppConfig::load(&config_path)?;
         let artifact_store = FileArtifactStore::new(resolved_config.storage.runs_dir.clone());
-        let default_worker = build_worker_from_selection(
-            resolved_config.worker.kind,
-            resolved_config.worker.codex.as_ref(),
-            resolved_config.worker.simulation.as_ref(),
-        )?;
+        let default_worker = build_worker_from_selection(&resolved_config.worker.selection)?;
         let worker: Box<dyn WorkerAdapter> = if let Some(planner) = resolved_config.planner_worker()
         {
             let planner_worker = build_worker_from_planner_config(planner)?;
@@ -151,7 +144,7 @@ impl HarnessUiService {
         } else {
             default_worker
         };
-        let controller = harness_core::controller::HarnessController::new(
+        let controller = loopsmith_core::controller::HarnessController::new(
             resolved_config,
             artifact_store,
             worker,
@@ -207,8 +200,29 @@ impl HarnessUiService {
                 continue;
             }
 
+            let title = if state.run_title.is_empty() {
+                let plan_path = run_root.join("plan.json");
+                if let Ok(plan_bytes) = fs::read(&plan_path) {
+                    if let Ok(plan) = serde_json::from_slice::<serde_json::Value>(&plan_bytes) {
+                        let goal = plan.get("goal").and_then(|g| g.as_str()).unwrap_or("");
+                        if !goal.is_empty() {
+                            truncate_str(goal, 50)
+                        } else {
+                            String::new()
+                        }
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                }
+            } else {
+                state.run_title.clone()
+            };
+
             runs.push(WorkspaceRunSummary {
-                run_root: state.run_root,
+                run_root: run_root.clone(),
+                run_title: title,
                 created_at: state.created_at,
                 updated_at: state.updated_at,
                 lifecycle: state.lifecycle,
@@ -221,6 +235,17 @@ impl HarnessUiService {
 
         runs.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
         Ok(runs)
+    }
+}
+
+fn truncate_str(text: &str, max_chars: usize) -> String {
+    let trimmed = text.trim();
+    let first_line = trimmed.lines().next().unwrap_or(trimmed);
+    if first_line.chars().count() <= max_chars {
+        first_line.to_string()
+    } else {
+        let truncated: String = first_line.chars().take(max_chars).collect();
+        format!("{truncated}…")
     }
 }
 
@@ -264,15 +289,11 @@ fn read_prompt_file(path: &Path) -> Result<String> {
 
 async fn with_selected_worker<F, Fut>(config: ResolvedConfig, f: F) -> Result<RunState>
 where
-    F: FnOnce(harness_core::controller::HarnessController<Box<dyn WorkerAdapter>>) -> Fut,
+    F: FnOnce(loopsmith_core::controller::HarnessController<Box<dyn WorkerAdapter>>) -> Fut,
     Fut: std::future::Future<Output = Result<RunState>>,
 {
     let artifact_store = FileArtifactStore::new(config.storage.runs_dir.clone());
-    let default_worker = build_worker_from_selection(
-        config.worker.kind,
-        config.worker.codex.as_ref(),
-        config.worker.simulation.as_ref(),
-    )?;
+    let default_worker = build_worker_from_selection(&config.worker.selection)?;
     let worker: Box<dyn WorkerAdapter> = if let Some(planner) = config.planner_worker() {
         let planner_worker = build_worker_from_planner_config(planner)?;
         Box::new(PlannerRoutedWorker::new(planner_worker, default_worker))
@@ -280,7 +301,7 @@ where
         default_worker
     };
     let controller =
-        harness_core::controller::HarnessController::new(config, artifact_store, worker);
+        loopsmith_core::controller::HarnessController::new(config, artifact_store, worker);
     f(controller).await
 }
 
@@ -301,18 +322,18 @@ impl WorkerAdapter for PlannerRoutedWorker {
         &self,
         context: &WorkerContext,
         artifacts: &StageArtifactSet,
-        request: &harness_core::domain::PlanningRequest,
-    ) -> Result<harness_core::domain::WorkerResult> {
+        request: &loopsmith_core::domain::PlanningRequest,
+    ) -> Result<loopsmith_core::domain::WorkerResult> {
         self.planner.plan(context, artifacts, request).await
     }
 
     async fn build(
         &self,
         context: &WorkerContext,
-        feature: &harness_core::artifacts::FeatureLayout,
+        feature: &loopsmith_core::artifacts::FeatureLayout,
         artifacts: &StageArtifactSet,
         contract: &FeatureContract,
-    ) -> Result<harness_core::domain::WorkerResult> {
+    ) -> Result<loopsmith_core::domain::WorkerResult> {
         self.default
             .build(context, feature, artifacts, contract)
             .await
@@ -321,10 +342,10 @@ impl WorkerAdapter for PlannerRoutedWorker {
     async fn evaluate(
         &self,
         context: &WorkerContext,
-        feature: &harness_core::artifacts::FeatureLayout,
+        feature: &loopsmith_core::artifacts::FeatureLayout,
         artifacts: &StageArtifactSet,
         request: &EvaluationRequest,
-    ) -> Result<harness_core::domain::WorkerResult> {
+    ) -> Result<loopsmith_core::domain::WorkerResult> {
         self.default
             .evaluate(context, feature, artifacts, request)
             .await
@@ -333,13 +354,13 @@ impl WorkerAdapter for PlannerRoutedWorker {
     async fn repair(
         &self,
         context: &WorkerContext,
-        feature: &harness_core::artifacts::FeatureLayout,
+        feature: &loopsmith_core::artifacts::FeatureLayout,
         artifacts: &StageArtifactSet,
         contract: &FeatureContract,
         builder_handoff: &BuilderHandoff,
         qa_report: &QaReport,
         previous_session_id: Option<&str>,
-    ) -> Result<harness_core::domain::WorkerResult> {
+    ) -> Result<loopsmith_core::domain::WorkerResult> {
         self.default
             .repair(
                 context,
@@ -357,29 +378,21 @@ impl WorkerAdapter for PlannerRoutedWorker {
 fn build_worker_from_planner_config(
     config: &PlannerWorkerConfig,
 ) -> Result<Box<dyn WorkerAdapter>> {
-    build_worker_from_selection(
-        config.kind,
-        config.codex.as_ref(),
-        config.simulation.as_ref(),
-    )
+    build_worker_from_selection(&config.selection)
 }
 
-fn build_worker_from_selection(
-    kind: WorkerKind,
-    codex: Option<&CodexWorkerConfig>,
-    simulation: Option<&SimulationWorkerConfig>,
-) -> Result<Box<dyn WorkerAdapter>> {
-    Ok(match kind {
-        WorkerKind::CodexCli => Box::new(CodexCliWorker::new(
-            codex
-                .context("codex worker config missing for selected worker")?
-                .clone(),
-        )),
-        WorkerKind::Simulated => Box::new(SimulatedWorker::new(
-            simulation
-                .context("simulation worker config missing for selected worker")?
-                .clone(),
-        )),
+fn build_worker_from_selection(selection: &WorkerSelection) -> Result<Box<dyn WorkerAdapter>> {
+    Ok(match selection {
+        WorkerSelection::CodexCli { codex } => Box::new(CodexCliWorker::new(codex.clone())),
+        WorkerSelection::ClaudeCli { claude } => {
+            Box::new(ClaudeCliWorker::new(claude.clone()))
+        }
+        WorkerSelection::GeminiCli { gemini } => {
+            Box::new(GeminiCliWorker::new(gemini.clone()))
+        }
+        WorkerSelection::Simulated { simulation } => {
+            Box::new(SimulatedWorker::new(simulation.clone()))
+        }
     })
 }
 
@@ -391,7 +404,7 @@ mod tests {
     use tempfile::tempdir;
     use uuid::Uuid;
 
-    use harness_core::domain::{PromptOverrides, RunLifecycleStatus, RunState};
+    use loopsmith_core::domain::{PromptOverrides, RunLifecycleStatus, RunState};
 
     use super::{HarnessUiService, LaunchDraft};
 
@@ -434,7 +447,7 @@ mod tests {
 root_dir = ".."
 
 [storage]
-runs_dir = "runs"
+runs_dir = ".loopsmith-runs"
 
 [workspace]
 isolation = "direct"
@@ -497,7 +510,7 @@ commands = []
         let config_dir = project_root.join("config");
         let prompts_dir = project_root.join("prompts");
         let schemas_dir = project_root.join("schemas");
-        let runs_dir = project_root.join("runs");
+        let runs_dir = project_root.join(".loopsmith-runs");
         let workspace = project_root.join("workspace");
         let other_workspace = project_root.join("workspace-other");
         fs::create_dir_all(&config_dir).expect("config dir");
@@ -520,7 +533,7 @@ commands = []
 root_dir = ".."
 
 [storage]
-runs_dir = "runs"
+runs_dir = ".loopsmith-runs"
 
 [workspace]
 isolation = "direct"
@@ -564,6 +577,7 @@ commands = []
             fs::create_dir_all(&run_root).expect("run root");
             let state = RunState {
                 run_id: Uuid::new_v4(),
+                run_title: format!("Test run {index}"),
                 created_at: Utc::now(),
                 updated_at: Utc::now() + chrono::TimeDelta::seconds(index as i64),
                 run_root: run_root.clone(),

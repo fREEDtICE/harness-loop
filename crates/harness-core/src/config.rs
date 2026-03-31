@@ -39,17 +39,74 @@ pub struct WorkspaceConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerConfig {
-    pub kind: WorkerKind,
-    pub codex: Option<CodexWorkerConfig>,
-    pub simulation: Option<SimulationWorkerConfig>,
+    #[serde(flatten)]
+    pub selection: WorkerSelection,
     #[serde(default)]
     pub planner: Option<PlannerWorkerConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WorkerSelection {
+    CodexCli {
+        codex: CodexWorkerConfig,
+    },
+    ClaudeCli {
+        claude: ClaudeWorkerConfig,
+    },
+    GeminiCli {
+        gemini: GeminiWorkerConfig,
+    },
+    Simulated {
+        simulation: SimulationWorkerConfig,
+    },
+}
+
+impl WorkerSelection {
+    pub fn kind(&self) -> WorkerKind {
+        match self {
+            Self::CodexCli { .. } => WorkerKind::CodexCli,
+            Self::ClaudeCli { .. } => WorkerKind::ClaudeCli,
+            Self::GeminiCli { .. } => WorkerKind::GeminiCli,
+            Self::Simulated { .. } => WorkerKind::Simulated,
+        }
+    }
+
+    pub fn codex(&self) -> Option<&CodexWorkerConfig> {
+        match self {
+            Self::CodexCli { codex } => Some(codex),
+            _ => None,
+        }
+    }
+
+    pub fn claude(&self) -> Option<&ClaudeWorkerConfig> {
+        match self {
+            Self::ClaudeCli { claude } => Some(claude),
+            _ => None,
+        }
+    }
+
+    pub fn gemini(&self) -> Option<&GeminiWorkerConfig> {
+        match self {
+            Self::GeminiCli { gemini } => Some(gemini),
+            _ => None,
+        }
+    }
+
+    pub fn simulation(&self) -> Option<&SimulationWorkerConfig> {
+        match self {
+            Self::Simulated { simulation } => Some(simulation),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkerKind {
     CodexCli,
+    ClaudeCli,
+    GeminiCli,
     Simulated,
 }
 
@@ -64,6 +121,22 @@ pub struct CodexWorkerConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaudeWorkerConfig {
+    pub binary: String,
+    pub model: String,
+    pub dangerously_skip_permissions: bool,
+    pub resume_sessions: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeminiWorkerConfig {
+    pub binary: String,
+    pub model: String,
+    pub sandbox: String,
+    pub resume_sessions: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimulationWorkerConfig {
     #[serde(default = "default_simulation_evaluator_statuses")]
     pub evaluator_statuses: Vec<QaStatus>,
@@ -73,9 +146,8 @@ pub struct SimulationWorkerConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlannerWorkerConfig {
-    pub kind: WorkerKind,
-    pub codex: Option<CodexWorkerConfig>,
-    pub simulation: Option<SimulationWorkerConfig>,
+    #[serde(flatten)]
+    pub selection: WorkerSelection,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -231,70 +303,8 @@ impl AppConfig {
 }
 
 impl ResolvedConfig {
-    pub fn codex_worker(&self) -> Result<&CodexWorkerConfig> {
-        codex_worker_for(
-            self.worker.kind,
-            &self.worker.codex,
-            "worker.kind is codex_cli but [worker.codex] is missing",
-        )
-    }
-
-    pub fn simulation_worker(&self) -> Result<&SimulationWorkerConfig> {
-        simulation_worker_for(
-            self.worker.kind,
-            &self.worker.simulation,
-            "worker.kind is simulated but [worker.simulation] is missing",
-        )
-    }
-
     pub fn planner_worker(&self) -> Option<&PlannerWorkerConfig> {
         self.worker.planner.as_ref()
-    }
-}
-
-impl WorkerConfig {
-    fn validate(&self) -> Result<()> {
-        validate_worker_selection(
-            self.kind,
-            &self.codex,
-            &self.simulation,
-            "worker.kind is codex_cli but [worker.codex] is missing",
-            "worker.kind is simulated but [worker.simulation] is missing",
-        )?;
-
-        if let Some(planner) = &self.planner {
-            planner.validate()?;
-        }
-
-        Ok(())
-    }
-}
-
-impl PlannerWorkerConfig {
-    pub fn codex_worker(&self) -> Result<&CodexWorkerConfig> {
-        codex_worker_for(
-            self.kind,
-            &self.codex,
-            "worker.planner.kind is codex_cli but [worker.planner.codex] is missing",
-        )
-    }
-
-    pub fn simulation_worker(&self) -> Result<&SimulationWorkerConfig> {
-        simulation_worker_for(
-            self.kind,
-            &self.simulation,
-            "worker.planner.kind is simulated but [worker.planner.simulation] is missing",
-        )
-    }
-
-    fn validate(&self) -> Result<()> {
-        validate_worker_selection(
-            self.kind,
-            &self.codex,
-            &self.simulation,
-            "worker.planner.kind is codex_cli but [worker.planner.codex] is missing",
-            "worker.planner.kind is simulated but [worker.planner.simulation] is missing",
-        )
     }
 }
 
@@ -324,7 +334,6 @@ impl EvaluatorConfig {
 
 impl AppConfig {
     fn validate(&self) -> Result<()> {
-        self.worker.validate()?;
         self.evaluator.validate()
     }
 }
@@ -347,55 +356,6 @@ fn default_readiness_poll_interval_ms() -> u64 {
 
 fn default_shutdown_grace_period_secs() -> u64 {
     5
-}
-
-fn validate_worker_selection(
-    kind: WorkerKind,
-    codex: &Option<CodexWorkerConfig>,
-    simulation: &Option<SimulationWorkerConfig>,
-    missing_codex_message: &str,
-    missing_simulation_message: &str,
-) -> Result<()> {
-    match kind {
-        WorkerKind::CodexCli => {
-            if codex.is_none() {
-                bail!("{missing_codex_message}");
-            }
-        }
-        WorkerKind::Simulated => {
-            if simulation.is_none() {
-                bail!("{missing_simulation_message}");
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn codex_worker_for<'a>(
-    kind: WorkerKind,
-    codex: &'a Option<CodexWorkerConfig>,
-    missing_message: &str,
-) -> Result<&'a CodexWorkerConfig> {
-    if kind != WorkerKind::CodexCli {
-        bail!("requested codex worker config for a non-codex worker");
-    }
-
-    codex.as_ref().with_context(|| missing_message.to_string())
-}
-
-fn simulation_worker_for<'a>(
-    kind: WorkerKind,
-    simulation: &'a Option<SimulationWorkerConfig>,
-    missing_message: &str,
-) -> Result<&'a SimulationWorkerConfig> {
-    if kind != WorkerKind::Simulated {
-        bail!("requested simulation worker config for a non-simulated worker");
-    }
-
-    simulation
-        .as_ref()
-        .with_context(|| missing_message.to_string())
 }
 
 fn resolve_path(base_dir: &Path, value: &Path) -> PathBuf {
@@ -431,7 +391,7 @@ mod tests {
 root_dir = ".."
 
 [storage]
-runs_dir = "runs"
+runs_dir = ".loopsmith-runs"
 
 [workspace]
 isolation = "direct"
@@ -469,12 +429,14 @@ commands = []
 
         let resolved = AppConfig::load(&config_file).expect("load config");
         assert_eq!(resolved.project_root, project_root);
-        assert_eq!(resolved.storage.runs_dir, project_root.join("runs"));
+        assert_eq!(resolved.storage.runs_dir, project_root.join(".loopsmith-runs"));
         assert_eq!(resolved.workspace.isolation, WorkspaceIsolation::Direct);
-        assert_eq!(resolved.worker.kind, WorkerKind::Simulated);
+        assert_eq!(resolved.worker.selection.kind(), WorkerKind::Simulated);
         assert_eq!(
             resolved
-                .simulation_worker()
+                .worker
+                .selection
+                .simulation()
                 .expect("simulation config")
                 .evaluator_statuses,
             vec![QaStatus::Pass]
@@ -504,7 +466,7 @@ commands = []
 root_dir = ".."
 
 [storage]
-runs_dir = "runs"
+runs_dir = ".loopsmith-runs"
 
 [workspace]
 isolation = "direct"
@@ -563,7 +525,7 @@ commands = []
 root_dir = ".."
 
 [storage]
-runs_dir = "runs"
+runs_dir = ".loopsmith-runs"
 
 [workspace]
 isolation = "direct"
@@ -577,6 +539,14 @@ session_prefix = "sim"
 
 [worker.planner]
 kind = "codex_cli"
+
+[worker.planner.codex]
+binary = "codex"
+model = "o3"
+sandbox = "workspace-write"
+full_auto = true
+skip_git_repo_check = true
+resume_sessions = false
 
 [prompts]
 planner = "prompts/planner.md"
@@ -602,10 +572,10 @@ commands = []
         )
         .expect("write config");
 
-        let err = AppConfig::load(&config_file).expect_err("config should fail");
-        assert!(
-            err.to_string().contains("worker.planner.kind is codex_cli"),
-            "unexpected error: {err:#}"
-        );
+        let resolved = AppConfig::load(&config_file).expect("load config with planner override");
+        let planner = resolved.planner_worker().expect("planner config");
+        assert_eq!(planner.selection.kind(), WorkerKind::CodexCli);
+        let codex = planner.selection.codex().expect("codex config");
+        assert_eq!(codex.model, "o3");
     }
 }

@@ -334,7 +334,24 @@ pub struct RunStageRecord {
     pub attempt: usize,
     pub status: WorkerStatus,
     pub artifact: PathBuf,
+    #[serde(default)]
+    pub stdout_log: PathBuf,
+    #[serde(default)]
+    pub stderr_log: PathBuf,
     pub session_id: Option<String>,
+}
+
+impl RunStageRecord {
+    pub fn backfill_log_paths(&mut self) {
+        if !self.stdout_log.as_os_str().is_empty() {
+            return;
+        }
+        if let Some(worker_dir) = self.artifact.parent() {
+            let stem = format!("{}-{:02}", self.stage.as_str(), self.attempt);
+            self.stdout_log = worker_dir.join("logs").join(format!("{stem}-stdout.log"));
+            self.stderr_log = worker_dir.join("logs").join(format!("{stem}-stderr.log"));
+        }
+    }
 }
 
 /// The stage currently executing when the harness checkpoints mid-run.
@@ -368,6 +385,8 @@ pub struct FeatureRunState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunState {
     pub run_id: Uuid,
+    #[serde(default)]
+    pub run_title: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub run_root: PathBuf,
@@ -387,6 +406,19 @@ pub struct RunState {
     pub active_stage: Option<ActiveRunStage>,
     pub plan_stage: Option<RunStageRecord>,
     pub features: Vec<FeatureRunState>,
+}
+
+impl RunState {
+    pub fn backfill_log_paths(&mut self) {
+        if let Some(ref mut plan) = self.plan_stage {
+            plan.backfill_log_paths();
+        }
+        for feature in &mut self.features {
+            for stage in &mut feature.stages {
+                stage.backfill_log_paths();
+            }
+        }
+    }
 }
 
 impl PlanningRequest {

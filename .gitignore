@@ -1,6 +1,8 @@
-/.runs
+/.loopsmith-runs
+/.runs-live/
+/.runs/
 /target
-/.runs-live
+/.loopsmith-runs-live
 /apps/harness-ui/node_modules
 /apps/harness-ui/dist
 /apps/harness-ui/src-tauri/target

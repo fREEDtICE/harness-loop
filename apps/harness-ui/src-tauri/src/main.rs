@@ -1,24 +1,23 @@
 use std::{
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::Mutex,
 };
 
 use chrono::Utc;
-use harness_core::{
+use loopsmith_core::{
     domain::{PromptOverrides, PromptSnapshot, RunState},
+    home,
     paths::normalize_path,
+    storage::{LoopSmithStore, WorkspaceRecord},
 };
-use harness_ui::{
-    HarnessUiService, LaunchDraft, WorkspaceProfile, WorkspaceProfileStore, WorkspaceRunSummary,
-};
+use loopsmith_ui::{HarnessUiService, LaunchDraft, WorkspaceRunSummary};
 use rfd::FileDialog;
 use serde::Serialize;
 use tauri::{Manager, State};
 
 struct AppState {
     service: HarnessUiService,
-    profile_store: WorkspaceProfileStore,
-    profile_lock: Mutex<()>,
+    store: Mutex<LoopSmithStore>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -29,19 +28,28 @@ struct PromptBundle {
 
 #[derive(Debug, Clone, Serialize)]
 struct WorkspacePayload {
-    profile: WorkspaceProfile,
+    record: WorkspaceRecord,
+    config_path: String,
     prompts: Option<PromptBundle>,
     runs: Vec<WorkspaceRunSummary>,
     current_run: Option<RunState>,
     config_error: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct GlobalPaths {
+    home: String,
+    config: String,
+    prompts_dir: String,
+}
+
 impl AppState {
     fn new() -> Self {
+        let db_path = home::loopsmith_db_path().expect("failed to resolve database path");
+        let store = LoopSmithStore::open(db_path).expect("failed to open database");
         Self {
             service: HarnessUiService,
-            profile_store: WorkspaceProfileStore::new(default_profile_store_path()),
-            profile_lock: Mutex::new(()),
+            store: Mutex::new(store),
         }
     }
 }
@@ -55,75 +63,20 @@ fn pick_workspace_folder() -> Option<String> {
 }
 
 #[tauri::command]
-fn pick_config_file() -> Option<String> {
-    FileDialog::new()
-        .add_filter("TOML", &["toml"])
-        .pick_file()
-        .map(normalize_path)
-        .map(|path| path.display().to_string())
+fn load_workspaces(state: State<'_, AppState>) -> Result<Vec<WorkspaceRecord>, String> {
+    let store = state.store.lock().map_err(|_| "lock poisoned")?;
+    store.list_workspaces().map_err(render_error)
 }
 
 #[tauri::command]
-fn load_profiles(state: State<'_, AppState>) -> Result<Vec<WorkspaceProfile>, String> {
-    let _guard = state
-        .profile_lock
-        .lock()
-        .map_err(|_| "failed to lock workspace profiles".to_string())?;
-    state.profile_store.load().map_err(render_error)
-}
-
-#[tauri::command]
-fn save_profile(
-    state: State<'_, AppState>,
-    mut profile: WorkspaceProfile,
-) -> Result<Vec<WorkspaceProfile>, String> {
-    let _guard = state
-        .profile_lock
-        .lock()
-        .map_err(|_| "failed to lock workspace profiles".to_string())?;
-    profile.workspace_path = normalize_path(profile.workspace_path);
-    profile.preferred_config_path = profile.preferred_config_path.map(normalize_path);
-    profile.last_run_root = profile.last_run_root.map(normalize_path);
-    profile.last_opened_at = Utc::now();
-    state.profile_store.upsert(profile).map_err(render_error)
-}
-
-#[tauri::command]
-fn remove_profile(
+fn remove_workspace(
     state: State<'_, AppState>,
     workspace_path: String,
-) -> Result<Vec<WorkspaceProfile>, String> {
-    let _guard = state
-        .profile_lock
-        .lock()
-        .map_err(|_| "failed to lock workspace profiles".to_string())?;
-    let workspace_path = normalize_path(PathBuf::from(workspace_path));
-    state
-        .profile_store
-        .remove(&workspace_path)
-        .map_err(render_error)
-}
-
-#[tauri::command]
-fn load_prompt_bundle(
-    state: State<'_, AppState>,
-    config_path: String,
-    overrides: PromptOverrides,
-) -> Result<PromptBundle, String> {
-    let config_path = normalize_path(PathBuf::from(config_path));
-    let defaults = state
-        .service
-        .load_effective_prompts(&config_path, &PromptOverrides::default())
-        .map_err(render_error)?;
-    let effective = state
-        .service
-        .load_effective_prompts(&config_path, &overrides)
-        .map_err(render_error)?;
-
-    Ok(PromptBundle {
-        defaults,
-        effective,
-    })
+) -> Result<Vec<WorkspaceRecord>, String> {
+    let store = state.store.lock().map_err(|_| "lock poisoned")?;
+    let ws = normalize_path(PathBuf::from(workspace_path));
+    store.remove_workspace(&ws).map_err(render_error)?;
+    store.list_workspaces().map_err(render_error)
 }
 
 #[tauri::command]
@@ -135,57 +88,63 @@ fn load_workspace(
         .service
         .validate_workspace_path(PathBuf::from(workspace_path))
         .map_err(render_error)?;
-    let _guard = state
-        .profile_lock
-        .lock()
-        .map_err(|_| "failed to lock workspace profiles".to_string())?;
-    let existing_profiles = state.profile_store.load().map_err(render_error)?;
-    let mut profile = existing_profiles
-        .into_iter()
-        .find(|profile| profile.workspace_path == workspace_path)
-        .unwrap_or_else(|| WorkspaceProfile::new(workspace_path.clone()));
-    profile.last_opened_at = Utc::now();
-    let profiles = state
-        .profile_store
-        .upsert(profile.clone())
-        .map_err(render_error)?;
-    profile = profiles
-        .into_iter()
-        .find(|entry| entry.workspace_path == workspace_path)
-        .unwrap_or(profile);
+
+    let config_path =
+        home::ensure_workspace_config(&workspace_path).map_err(render_error)?;
+
+    let display_name = workspace_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| workspace_path.display().to_string());
+
+    let record = WorkspaceRecord {
+        workspace_path: workspace_path.clone(),
+        display_name,
+        last_opened_at: Utc::now(),
+        pinned: false,
+    };
+
+    {
+        let store = state.store.lock().map_err(|_| "lock poisoned")?;
+        let existing = store.list_workspaces().map_err(render_error)?;
+        let mut upsert_record = record.clone();
+        if let Some(prev) = existing.iter().find(|r| r.workspace_path == workspace_path) {
+            upsert_record.pinned = prev.pinned;
+        }
+        store
+            .upsert_workspace(&upsert_record)
+            .map_err(render_error)?;
+    }
 
     let mut prompts = None;
     let mut runs = Vec::new();
     let mut current_run = None;
     let mut config_error = None;
 
-    if let Some(config_path) = profile.preferred_config_path.clone() {
-        match build_prompt_bundle(&state.service, &config_path, &profile.prompt_overrides) {
-            Ok(bundle) => prompts = Some(bundle),
-            Err(err) => config_error = Some(err),
-        }
+    match build_prompt_bundle(&state.service, &config_path, &PromptOverrides::default()) {
+        Ok(bundle) => prompts = Some(bundle),
+        Err(err) => config_error = Some(err),
+    }
 
-        match state
-            .service
-            .list_runs_for_workspace(&config_path, &profile.workspace_path)
-        {
-            Ok(found_runs) => {
-                runs = found_runs;
+    match state
+        .service
+        .list_runs_for_workspace(&config_path, &workspace_path)
+    {
+        Ok(found_runs) => runs = found_runs,
+        Err(err) => {
+            if config_error.is_none() {
+                config_error = Some(render_error(err));
             }
-            Err(err) => config_error = Some(render_error(err)),
-        }
-
-        if let Some(run_root) = profile
-            .last_run_root
-            .clone()
-            .or_else(|| runs.first().map(|run| run.run_root.clone()))
-        {
-            current_run = state.service.inspect_run(&config_path, &run_root).ok();
         }
     }
 
+    if let Some(run_root) = runs.first().map(|r| r.run_root.clone()) {
+        current_run = state.service.inspect_run(&config_path, &run_root).ok();
+    }
+
     Ok(WorkspacePayload {
-        profile,
+        record,
+        config_path: config_path.display().to_string(),
         prompts,
         runs,
         current_run,
@@ -194,32 +153,51 @@ fn load_workspace(
 }
 
 #[tauri::command]
+fn load_prompt_bundle_for_workspace(
+    state: State<'_, AppState>,
+    workspace_path: String,
+    overrides: PromptOverrides,
+) -> Result<PromptBundle, String> {
+    let workspace_path = normalize_path(PathBuf::from(workspace_path));
+    let config_path = home::workspace_config_path(&workspace_path);
+    let defaults = state
+        .service
+        .load_effective_prompts(&config_path, &PromptOverrides::default())
+        .map_err(render_error)?;
+    let effective = state
+        .service
+        .load_effective_prompts(&config_path, &overrides)
+        .map_err(render_error)?;
+    Ok(PromptBundle {
+        defaults,
+        effective,
+    })
+}
+
+#[tauri::command]
 fn list_runs(
     state: State<'_, AppState>,
-    config_path: String,
     workspace_path: String,
 ) -> Result<Vec<WorkspaceRunSummary>, String> {
+    let workspace_path = normalize_path(PathBuf::from(workspace_path));
+    let config_path = home::workspace_config_path(&workspace_path);
     state
         .service
-        .list_runs_for_workspace(
-            normalize_path(PathBuf::from(config_path)),
-            normalize_path(PathBuf::from(workspace_path)),
-        )
+        .list_runs_for_workspace(config_path, &workspace_path)
         .map_err(render_error)
 }
 
 #[tauri::command]
 fn inspect_run(
     state: State<'_, AppState>,
-    config_path: String,
+    workspace_path: String,
     run_root: String,
 ) -> Result<RunState, String> {
+    let workspace_path = normalize_path(PathBuf::from(workspace_path));
+    let config_path = home::workspace_config_path(&workspace_path);
     state
         .service
-        .inspect_run(
-            normalize_path(PathBuf::from(config_path)),
-            normalize_path(PathBuf::from(run_root)),
-        )
+        .inspect_run(config_path, normalize_path(PathBuf::from(run_root)))
         .map_err(render_error)
 }
 
@@ -231,22 +209,106 @@ async fn start_run(state: State<'_, AppState>, draft: LaunchDraft) -> Result<Run
 #[tauri::command]
 async fn resume_run(
     state: State<'_, AppState>,
-    config_path: String,
+    workspace_path: String,
     run_root: String,
 ) -> Result<RunState, String> {
+    let workspace_path = normalize_path(PathBuf::from(workspace_path));
+    let config_path = home::workspace_config_path(&workspace_path);
     state
         .service
-        .resume_run(
-            normalize_path(PathBuf::from(config_path)),
-            normalize_path(PathBuf::from(run_root)),
-        )
+        .resume_run(config_path, normalize_path(PathBuf::from(run_root)))
         .await
         .map_err(render_error)
 }
 
+#[tauri::command]
+fn read_global_config() -> Result<String, String> {
+    let path = home::global_config_path().map_err(render_error)?;
+    if !path.exists() {
+        return Ok(String::new());
+    }
+    std::fs::read_to_string(&path).map_err(render_error)
+}
+
+#[tauri::command]
+fn write_global_config(state: State<'_, AppState>, content: String) -> Result<(), String> {
+    let path = home::global_config_path().map_err(render_error)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(render_error)?;
+    }
+    std::fs::write(&path, content.as_bytes()).map_err(render_error)?;
+
+    let store = state.store.lock().map_err(render_error)?;
+    let workspaces = store.list_workspaces().map_err(render_error)?;
+    drop(store);
+
+    for record in &workspaces {
+        let ws_path = PathBuf::from(&record.workspace_path);
+        if let Err(err) = home::patch_workspace_from_global(&ws_path, &content) {
+            eprintln!(
+                "warn: failed to patch workspace config for {}: {err}",
+                ws_path.display()
+            );
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn read_global_prompt(name: String) -> Result<String, String> {
+    let home = home::loopsmith_home().map_err(render_error)?;
+    let path = home.join("prompts").join(&name);
+    if !path.exists() {
+        return Ok(String::new());
+    }
+    std::fs::read_to_string(&path).map_err(render_error)
+}
+
+#[tauri::command]
+fn write_global_prompt(name: String, content: String) -> Result<(), String> {
+    let home = home::loopsmith_home().map_err(render_error)?;
+    let path = home.join("prompts").join(&name);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(render_error)?;
+    }
+    std::fs::write(&path, content.as_bytes()).map_err(render_error)
+}
+
+#[tauri::command]
+fn read_workspace_config(workspace_path: String) -> Result<String, String> {
+    let workspace_path = normalize_path(PathBuf::from(workspace_path));
+    let config_path = home::workspace_config_path(&workspace_path);
+    if !config_path.exists() {
+        return Ok(String::new());
+    }
+    std::fs::read_to_string(&config_path).map_err(render_error)
+}
+
+#[tauri::command]
+fn write_workspace_config(workspace_path: String, content: String) -> Result<(), String> {
+    let workspace_path = normalize_path(PathBuf::from(workspace_path));
+    let config_path = home::workspace_config_path(&workspace_path);
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent).map_err(render_error)?;
+    }
+    std::fs::write(&config_path, content.as_bytes()).map_err(render_error)
+}
+
+#[tauri::command]
+fn get_global_paths() -> Result<GlobalPaths, String> {
+    let home = home::loopsmith_home().map_err(render_error)?;
+    let config = home::global_config_path().map_err(render_error)?;
+    Ok(GlobalPaths {
+        home: home.display().to_string(),
+        config: config.display().to_string(),
+        prompts_dir: home.join("prompts").display().to_string(),
+    })
+}
+
 fn build_prompt_bundle(
     service: &HarnessUiService,
-    config_path: &Path,
+    config_path: &std::path::Path,
     overrides: &PromptOverrides,
 ) -> Result<PromptBundle, String> {
     let defaults = service
@@ -261,17 +323,81 @@ fn build_prompt_bundle(
     })
 }
 
-fn render_error(error: impl std::fmt::Display) -> String {
-    error.to_string()
+#[tauri::command]
+fn read_stage_log(path: String) -> Result<String, String> {
+    let path = PathBuf::from(path);
+    if !path.exists() {
+        return Ok(String::new());
+    }
+    std::fs::read_to_string(&path).map_err(render_error)
 }
 
-fn default_profile_store_path() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".codex-harness-rs")
-        .join("ui")
-        .join("workspace-profiles.json")
+#[tauri::command]
+fn open_file(path: String) -> Result<(), String> {
+    let path = PathBuf::from(&path);
+    if !path.exists() {
+        return Err(format!("file not found: {}", path.display()));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&path)
+            .spawn()
+            .map_err(render_error)?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .map_err(render_error)?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &path.display().to_string()])
+            .spawn()
+            .map_err(render_error)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn reveal_in_finder(path: String) -> Result<(), String> {
+    let path = PathBuf::from(&path);
+    if !path.exists() {
+        return Err(format!("path not found: {}", path.display()));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(&path)
+            .spawn()
+            .map_err(render_error)?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(parent) = path.parent() {
+            std::process::Command::new("xdg-open")
+                .arg(parent)
+                .spawn()
+                .map_err(render_error)?;
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg("/select,")
+            .arg(&path)
+            .spawn()
+            .map_err(render_error)?;
+    }
+    Ok(())
+}
+
+fn render_error(error: impl std::fmt::Display) -> String {
+    error.to_string()
 }
 
 #[tauri::command]
@@ -284,34 +410,42 @@ fn write_ui_state(json: String) -> Result<(), String> {
 }
 
 fn ui_state_snapshot_path() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".codex-harness-rs")
+    home::loopsmith_home()
+        .unwrap_or_else(|_| PathBuf::from(".loopsmith"))
         .join("ui")
         .join("ui-state.json")
 }
 
 fn main() {
+    home::ensure_global_home().expect("failed to initialize LoopSmith global home");
+
     tauri::Builder::default()
         .manage(AppState::new())
         .invoke_handler(tauri::generate_handler![
             pick_workspace_folder,
-            pick_config_file,
-            load_profiles,
-            save_profile,
-            remove_profile,
-            load_prompt_bundle,
+            load_workspaces,
+            remove_workspace,
             load_workspace,
+            load_prompt_bundle_for_workspace,
             list_runs,
             inspect_run,
             start_run,
             resume_run,
+            read_global_config,
+            write_global_config,
+            read_global_prompt,
+            write_global_prompt,
+            read_workspace_config,
+            write_workspace_config,
+            get_global_paths,
             write_ui_state,
+            read_stage_log,
+            open_file,
+            reveal_in_finder,
         ])
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
-                let _ = window.set_title("Codex Harness UI");
+                let _ = window.set_title("LoopSmith");
             }
             Ok(())
         })

@@ -1,24 +1,27 @@
-use std::{fs, path::Path, path::PathBuf};
+use std::{fs, path::Path, path::PathBuf, process};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use harness_core::{domain::RunState, paths::normalize_path};
-use harness_ui::service::{HarnessUiService, LaunchDraft};
+use loopsmith_core::{domain::RunState, home, paths::normalize_path, setup};
+use loopsmith_ui::service::{HarnessUiService, LaunchDraft};
 use tracing_subscriber::{EnvFilter, fmt};
 
 #[derive(Debug, Parser)]
-#[command(name = "codex-harness-rs")]
-#[command(about = "Rust scaffold for a long-running app development harness")]
+#[command(name = "loopsmith")]
+#[command(about = "LoopSmith – a long-running application development harness")]
 struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
+
+    #[arg(long, global = true, help = "Disable the GUI and run in headless CLI mode")]
+    no_ui: bool,
 }
 
 #[derive(Debug, Subcommand)]
 enum Command {
     Run {
-        #[arg(long, default_value = "config/codex-cli.toml")]
-        config: PathBuf,
+        #[arg(long)]
+        config: Option<PathBuf>,
         #[arg(long)]
         workspace: PathBuf,
         #[arg(long)]
@@ -27,16 +30,20 @@ enum Command {
         feature_limit: Option<usize>,
     },
     Resume {
-        #[arg(long, default_value = "config/codex-cli.toml")]
-        config: PathBuf,
+        #[arg(long)]
+        config: Option<PathBuf>,
         #[arg(long)]
         run_root: PathBuf,
     },
     Inspect {
-        #[arg(long, default_value = "config/codex-cli.toml")]
-        config: PathBuf,
+        #[arg(long)]
+        config: Option<PathBuf>,
         #[arg(long)]
         run_root: PathBuf,
+    },
+    Init {
+        #[arg(long, help = "Overwrite existing workspace templates")]
+        force: bool,
     },
 }
 
@@ -45,22 +52,68 @@ async fn main() -> Result<()> {
     init_tracing();
 
     let cli = Cli::parse();
-    let service = HarnessUiService;
+
+    home::ensure_global_home()?;
 
     match cli.command {
+        None => {
+            if cli.no_ui {
+                eprintln!("loopsmith: no subcommand specified. Run `loopsmith --help` for usage.");
+                process::exit(1);
+            }
+
+            if !setup::has_default_config()? {
+                setup::run_interactive_setup()?;
+            }
+
+            launch_gui()?;
+        }
+        Some(command) => {
+            ensure_ready_for_cli(&command)?;
+            run_command(command).await?;
+        }
+    }
+
+    Ok(())
+}
+
+fn ensure_ready_for_cli(command: &Command) -> Result<()> {
+    match command {
+        Command::Init { .. } => {}
+        Command::Run { config: Some(_), .. }
+        | Command::Resume { config: Some(_), .. }
+        | Command::Inspect { config: Some(_), .. } => {}
+        _ => {
+            if !setup::has_default_config()? {
+                setup::run_interactive_setup()?;
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn run_command(command: Command) -> Result<()> {
+    match command {
+        Command::Init { force } => {
+            if force {
+                home::init_global_home_force()?;
+            }
+            setup::run_interactive_setup()?;
+        }
         Command::Run {
             config,
             workspace,
             request_file,
             feature_limit,
         } => {
-            let config_path = absolutize(&config)?;
+            let config_path = resolve_config(config)?;
             let source_workspace = absolutize(&workspace)?;
             let request_file = absolutize(&request_file)?;
             let request = fs::read_to_string(&request_file).with_context(|| {
                 format!("failed to read request file {}", request_file.display())
             })?;
 
+            let service = HarnessUiService;
             let state = service
                 .start_run(LaunchDraft {
                     workspace_path: source_workspace,
@@ -74,15 +127,17 @@ async fn main() -> Result<()> {
             print_run_state(&state);
         }
         Command::Resume { config, run_root } => {
-            let config_path = absolutize(&config)?;
+            let config_path = resolve_config(config)?;
             let run_root = absolutize(&run_root)?;
+            let service = HarnessUiService;
             let state = service.resume_run(config_path, run_root).await?;
 
             print_run_state(&state);
         }
         Command::Inspect { config, run_root } => {
-            let config_path = absolutize(&config)?;
+            let config_path = resolve_config(config)?;
             let run_root = absolutize(&run_root)?;
+            let service = HarnessUiService;
             let state = service.inspect_run(config_path, run_root)?;
 
             print_run_state(&state);
@@ -90,6 +145,21 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn launch_gui() -> Result<()> {
+    println!("launching LoopSmith GUI...");
+    // TODO: integrate Tauri GUI launch here
+    // For now, this is a placeholder. The actual implementation will
+    // spawn the Tauri window from the loopsmith-gui binary/crate.
+    Ok(())
+}
+
+fn resolve_config(explicit: Option<PathBuf>) -> Result<PathBuf> {
+    match explicit {
+        Some(path) => absolutize(&path),
+        None => setup::default_config_path(),
+    }
 }
 
 fn print_run_state(state: &RunState) {
@@ -167,7 +237,7 @@ fn print_run_state(state: &RunState) {
 fn init_tracing() {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         EnvFilter::new(
-            "info,harness_core=info,harness_worker_codex=info,harness_worker_simulated=info",
+            "info,loopsmith_core=info,loopsmith_worker_claude=info,loopsmith_worker_codex=info,loopsmith_worker_gemini=info,loopsmith_worker_simulated=info",
         )
     });
 

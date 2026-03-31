@@ -1,5 +1,5 @@
 [package]
-name = "harness-worker-codex"
+name = "loopsmith-worker-codex"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,7 +13,7 @@ serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 uuid.workspace = true
-harness-core = { path = "../harness-core" }
+loopsmith-core = { path = "../harness-core" }
 
 [dev-dependencies]
 tempfile.workspace = true

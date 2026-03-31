@@ -1,5 +1,5 @@
 [package]
-name = "harness-ui-tauri"
+name = "loopsmith-gui"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,5 +13,5 @@ chrono.workspace = true
 rfd = "0.15"
 serde.workspace = true
 tauri = { version = "2", features = [] }
-harness-core = { path = "../../../crates/harness-core" }
-harness-ui = { path = "../../../crates/harness-ui" }
+loopsmith-core = { path = "../../../crates/harness-core" }
+loopsmith-ui = { path = "../../../crates/harness-ui" }

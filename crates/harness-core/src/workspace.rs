@@ -197,7 +197,7 @@ mod tests {
                 .success()
         );
 
-        let run_root = repo.join(".harness-runs").join("run");
+        let run_root = repo.join(".loopsmith-runs").join("run");
         fs::create_dir_all(&run_root).expect("create run root");
 
         let prepared = WorkspaceManager::prepare(WorkspaceIsolation::GitWorktree, &repo, &run_root)
@@ -205,6 +205,6 @@ mod tests {
         assert_eq!(prepared.execution_workspace, repo);
         assert_eq!(prepared.execution_root, repo);
         assert!(prepared.execution_workspace.join("README.md").exists());
-        assert!(prepared.execution_workspace.join(".harness-runs").exists());
+        assert!(prepared.execution_workspace.join(".loopsmith-runs").exists());
     }
 }

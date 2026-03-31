@@ -2,7 +2,7 @@ use std::fs;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use harness_core::{
+use loopsmith_core::{
     artifacts::{FeatureLayout, StageArtifactSet},
     config::SimulationWorkerConfig,
     domain::{
@@ -97,7 +97,7 @@ impl WorkerAdapter for SimulatedWorker {
         context: &WorkerContext,
         feature: &FeatureLayout,
         artifacts: &StageArtifactSet,
-        contract: &harness_core::domain::FeatureContract,
+        contract: &loopsmith_core::domain::FeatureContract,
     ) -> Result<WorkerResult> {
         let prompt = render_worker_prompt(
             context,
@@ -180,14 +180,14 @@ impl WorkerAdapter for SimulatedWorker {
         context: &WorkerContext,
         feature: &FeatureLayout,
         artifacts: &StageArtifactSet,
-        contract: &harness_core::domain::FeatureContract,
+        contract: &loopsmith_core::domain::FeatureContract,
         builder_handoff: &BuilderHandoff,
         qa_report: &QaReport,
         previous_session_id: Option<&str>,
     ) -> Result<WorkerResult> {
         #[derive(Serialize)]
         struct RepairPayload<'a> {
-            contract: &'a harness_core::domain::FeatureContract,
+            contract: &'a loopsmith_core::domain::FeatureContract,
             builder_handoff: &'a BuilderHandoff,
             qa_report: &'a QaReport,
         }

@@ -5,7 +5,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use harness_core::domain::PromptOverrides;
+use loopsmith_core::domain::PromptOverrides;
 use serde::{Deserialize, Serialize};
 
 /// Persisted launcher state for a single workspace quick link.
