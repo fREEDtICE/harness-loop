@@ -8,6 +8,7 @@ import {
 } from "react";
 import UIStateReporter from "./UIStateReporter";
 import HarnessLanding from "./HarnessLanding";
+import SetupWizard from "./SetupWizard";
 import SettingsPanel from "./SettingsPanel";
 import WorkspaceTimeline from "./WorkspaceTimeline";
 import RunDetail from "./RunDetail";
@@ -38,9 +39,13 @@ export default function App() {
   const [showNewRun, setShowNewRun] = useState(false);
   const [showProjectSettings, setShowProjectSettings] = useState(false);
   const [selectedRunRoot, setSelectedRunRoot] = useState<string | null>(null);
+  const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
   const pollTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
+    invoke<boolean>("has_default_config")
+      .then((hasConfig) => setNeedsSetup(!hasConfig))
+      .catch(() => setNeedsSetup(false));
     void refreshWorkspaces();
   }, []);
 
@@ -268,6 +273,10 @@ export default function App() {
   }
 
   function renderContent() {
+    if (needsSetup) {
+      return <SetupWizard onComplete={() => setNeedsSetup(false)} />;
+    }
+
     if (!workspace) return <HarnessLanding />;
 
     if (selectedRunRoot && selectedRun) {

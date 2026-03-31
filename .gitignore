@@ -7,3 +7,5 @@
 /apps/harness-ui/dist
 /apps/harness-ui/src-tauri/target
 .DS_Store
+dist/
+*.log

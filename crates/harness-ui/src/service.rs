@@ -382,18 +382,39 @@ fn build_worker_from_planner_config(
 }
 
 fn build_worker_from_selection(selection: &WorkerSelection) -> Result<Box<dyn WorkerAdapter>> {
-    Ok(match selection {
-        WorkerSelection::CodexCli { codex } => Box::new(CodexCliWorker::new(codex.clone())),
+    match selection {
+        WorkerSelection::CodexCli { codex } => {
+            verify_worker_binary(&codex.binary, "codex", "npm install -g @openai/codex")?;
+            Ok(Box::new(CodexCliWorker::new(codex.clone())))
+        }
         WorkerSelection::ClaudeCli { claude } => {
-            Box::new(ClaudeCliWorker::new(claude.clone()))
+            verify_worker_binary(&claude.binary, "claude", "npm install -g @anthropic-ai/claude-code")?;
+            Ok(Box::new(ClaudeCliWorker::new(claude.clone())))
         }
         WorkerSelection::GeminiCli { gemini } => {
-            Box::new(GeminiCliWorker::new(gemini.clone()))
+            verify_worker_binary(&gemini.binary, "gemini", "npm install -g @anthropic-ai/gemini-cli")?;
+            Ok(Box::new(GeminiCliWorker::new(gemini.clone())))
         }
         WorkerSelection::Simulated { simulation } => {
-            Box::new(SimulatedWorker::new(simulation.clone()))
+            Ok(Box::new(SimulatedWorker::new(simulation.clone())))
         }
-    })
+    }
+}
+
+fn verify_worker_binary(binary: &str, name: &str, install_hint: &str) -> Result<()> {
+    if let Some(diagnostic) = loopsmith_core::shell_env::check_worker_binary(binary) {
+        bail!(
+            "{name} CLI: {diagnostic}\n\n\
+             Troubleshooting:\n\
+             1. Install {name} CLI: {install_hint}\n\
+             2. Or specify the full path in your config file:\n\
+                [worker.{name}]\n\
+                binary = \"/full/path/to/{binary}\"\n\
+             3. Verify it is accessible: which {binary}"
+        );
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

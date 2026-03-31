@@ -1,14 +1,16 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::Command as StdCommand,
 };
 
 use anyhow::{Context, Result};
 use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
 use tracing::info;
 
-use crate::home;
+use crate::{
+    env_probe::{self, EnvironmentReport, ToolStatus},
+    home,
+};
 
 #[derive(Debug, Clone)]
 pub struct SetupResult {
@@ -68,24 +70,62 @@ pub fn run_interactive_setup() -> Result<SetupResult> {
     println!("🔧 Welcome to LoopSmith! Let's set up your workspace.");
     println!();
 
+    println!("🔍 Scanning your environment for CLI tools...");
+    println!();
+
+    let report = env_probe::probe_environment();
+    print_environment_report(&report);
+
     let theme = ColorfulTheme::default();
 
     let cli_labels: Vec<String> = CLI_OPTIONS
         .iter()
-        .map(|opt| {
-            let status = detect_binary(opt.binary);
-            format!("{} ({}){}", opt.label, opt.binary, status)
-        })
+        .map(|opt| format_cli_label(opt, &report))
         .collect();
+
+    let default_index = find_recommended_default(&report);
 
     let cli_index = Select::with_theme(&theme)
         .with_prompt("Which coding CLI do you use?")
         .items(&cli_labels)
-        .default(0)
+        .default(default_index)
         .interact()
         .context("failed to read CLI selection")?;
 
     let selected_cli = &CLI_OPTIONS[cli_index];
+    let probe = report.find_tool(selected_cli.kind_tag);
+
+    if let Some(probe) = probe {
+        if !probe.is_found() {
+            println!();
+            println!(
+                "  ⚠  {} ({}) was not found on your machine.",
+                selected_cli.label, selected_cli.binary
+            );
+            println!("     You can still proceed, but runs will fail until it is installed.");
+
+            let proceed = Confirm::with_theme(&theme)
+                .with_prompt("Continue anyway?")
+                .default(false)
+                .interact()
+                .context("failed to read confirmation")?;
+
+            if !proceed {
+                anyhow::bail!("setup cancelled: selected CLI not found");
+            }
+        } else if probe.has_warnings() {
+            println!();
+            if let ToolStatus::Found { warnings, .. } = &probe.status {
+                for w in warnings {
+                    println!("  ⚠  {w}");
+                }
+            }
+        }
+    }
+
+    let resolved_binary = probe
+        .and_then(|p| p.resolved_path())
+        .unwrap_or(selected_cli.binary);
 
     let selected_model = prompt_model_selection(&theme, selected_cli)?;
 
@@ -95,6 +135,7 @@ pub fn run_interactive_setup() -> Result<SetupResult> {
         "  Coding CLI:   {} ({})",
         selected_cli.label, selected_model
     );
+    println!("  Binary:       {}", resolved_binary);
     println!("  Prompts:      {}/prompts/ (3 built-in files)", workspace.display());
     println!();
 
@@ -108,7 +149,8 @@ pub fn run_interactive_setup() -> Result<SetupResult> {
         anyhow::bail!("setup cancelled by user");
     }
 
-    let config_content = generate_default_config(selected_cli, &selected_model);
+    let config_content =
+        generate_default_config_with_binary(selected_cli, &selected_model, resolved_binary);
     let config_path = workspace.join("config/default.toml");
     if let Some(parent) = config_path.parent() {
         fs::create_dir_all(parent)?;
@@ -128,6 +170,77 @@ pub fn run_interactive_setup() -> Result<SetupResult> {
         worker_kind: selected_cli.kind_tag,
         model: selected_model,
     })
+}
+
+fn print_environment_report(report: &EnvironmentReport) {
+    match &report.node.status {
+        env_probe::RuntimeStatus::Found { path, version } => {
+            println!("  ✓ Node.js {version} ({path})");
+        }
+        env_probe::RuntimeStatus::NotFound => {
+            println!("  ✗ Node.js not found (required by most CLI tools)");
+        }
+    }
+
+    for tool in &report.tools {
+        match &tool.status {
+            ToolStatus::Found {
+                path,
+                version,
+                warnings,
+            } => {
+                let ver = version.as_deref().unwrap_or("unknown version");
+                println!("  ✓ {} — {ver} ({path})", tool.display_name);
+                for w in warnings {
+                    println!("    ⚠ {w}");
+                }
+            }
+            ToolStatus::NotFound => {
+                println!("  ✗ {} — not found", tool.display_name);
+            }
+        }
+    }
+    println!();
+}
+
+fn format_cli_label(opt: &CliOption, report: &EnvironmentReport) -> String {
+    let probe = report.find_tool(opt.kind_tag);
+    match probe.map(|p| &p.status) {
+        Some(ToolStatus::Found {
+            version, warnings, ..
+        }) => {
+            let ver = version.as_deref().unwrap_or("");
+            let suffix = if warnings.is_empty() {
+                " ✓".to_string()
+            } else {
+                " ⚠".to_string()
+            };
+            if ver.is_empty() {
+                format!("{}{suffix}", opt.label)
+            } else {
+                format!("{} ({ver}){suffix}", opt.label)
+            }
+        }
+        _ => format!("{} (not installed)", opt.label),
+    }
+}
+
+fn find_recommended_default(report: &EnvironmentReport) -> usize {
+    for (i, opt) in CLI_OPTIONS.iter().enumerate() {
+        if let Some(probe) = report.find_tool(opt.kind_tag) {
+            if probe.is_found() && !probe.has_warnings() {
+                return i;
+            }
+        }
+    }
+    for (i, opt) in CLI_OPTIONS.iter().enumerate() {
+        if let Some(probe) = report.find_tool(opt.kind_tag) {
+            if probe.is_found() {
+                return i;
+            }
+        }
+    }
+    0
 }
 
 fn prompt_model_selection(theme: &ColorfulTheme, cli: &CliOption) -> Result<String> {
@@ -177,19 +290,11 @@ pub fn default_config_path() -> Result<PathBuf> {
     Ok(workspace.join("config/default.toml"))
 }
 
-fn detect_binary(binary: &str) -> String {
-    let cmd = if cfg!(windows) { "where" } else { "which" };
-    match StdCommand::new(cmd).arg(binary).output() {
-        Ok(output) if output.status.success() => {
-            let path = String::from_utf8_lossy(&output.stdout);
-            let path = path.trim();
-            format!(" ✓ found at {path}")
-        }
-        _ => " ✗ not found".to_string(),
-    }
+fn generate_default_config(cli: &CliOption, model: &str) -> String {
+    generate_default_config_with_binary(cli, model, cli.binary)
 }
 
-fn generate_default_config(cli: &CliOption, model: &str) -> String {
+fn generate_default_config_with_binary(cli: &CliOption, model: &str, binary: &str) -> String {
     let noop_command = if cfg!(windows) {
         r#"  ["cmd", "/c", "echo", "ok"]"#
     } else {
@@ -208,7 +313,7 @@ sandbox = "workspace-write"
 full_auto = true
 skip_git_repo_check = true
 resume_sessions = true"#,
-            binary = cli.binary,
+            binary = binary,
             model = model,
         ),
         "claude_cli" => format!(
@@ -220,7 +325,7 @@ binary = "{binary}"
 model = "{model}"
 dangerously_skip_permissions = true
 resume_sessions = true"#,
-            binary = cli.binary,
+            binary = binary,
             model = model,
         ),
         "gemini_cli" => format!(
@@ -232,7 +337,7 @@ binary = "{binary}"
 model = "{model}"
 sandbox = "workspace-write"
 resume_sessions = false"#,
-            binary = cli.binary,
+            binary = binary,
             model = model,
         ),
         _ => unreachable!(),

@@ -135,7 +135,12 @@ impl ClaudeCliWorker {
 
         let mut child = process
             .spawn()
-            .with_context(|| format!("failed to execute {}", self.config.binary))?;
+            .with_context(|| {
+                format!(
+                    "failed to execute `{}`. Is the Claude CLI installed and available in PATH?",
+                    self.config.binary
+                )
+            })?;
         let child_pid = child.id();
 
         if let Some(mut stdin) = child.stdin.take() {

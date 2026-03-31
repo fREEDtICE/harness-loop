@@ -38,7 +38,7 @@ export default function HarnessLanding() {
       </div>
 
       <div className="landing-diagram" data-testid="landing-loop-diagram">
-        <svg viewBox="0 0 780 320" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <svg viewBox="0 0 860 240" fill="none" xmlns="http://www.w3.org/2000/svg">
           <defs>
             <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
               <path d="M0 0 L8 3 L0 6" fill="#484f58" />
@@ -54,52 +54,52 @@ export default function HarnessLanding() {
             </marker>
           </defs>
 
-          <rect x="40" y="24" width="120" height="50" rx="10" fill="#161b22" stroke="#484f58" strokeWidth="1.5" />
-          <text x="100" y="46" textAnchor="middle" fill="#c9d1d9" fontSize="11" fontWeight="700">{t('landing.userRequest')}</text>
-          <text x="100" y="62" textAnchor="middle" fill="#484f58" fontSize="10">{t('landing.featureGoal')}</text>
-          <line x1="100" y1="74" x2="100" y2="115" stroke="#484f58" strokeWidth="1.5" markerEnd="url(#arrow)" />
+          <rect x="10" y="40" width="110" height="50" rx="10" fill="#161b22" stroke="#484f58" strokeWidth="1.5" />
+          <text x="65" y="62" textAnchor="middle" fill="#c9d1d9" fontSize="11" fontWeight="700">{t('landing.userRequest')}</text>
+          <text x="65" y="77" textAnchor="middle" fill="#484f58" fontSize="10">{t('landing.featureGoal')}</text>
+          <line x1="120" y1="65" x2="160" y2="65" stroke="#484f58" strokeWidth="1.5" markerEnd="url(#arrow)" />
 
-          <rect x="40" y="120" width="120" height="60" rx="10" fill="#161b22" stroke="#d29922" strokeWidth="1.5" />
-          <text x="100" y="145" textAnchor="middle" fill="#d29922" fontSize="11" fontWeight="700">{t('landing.planLabel')}</text>
-          <text x="100" y="162" textAnchor="middle" fill="#8b949e" fontSize="10">{t('landing.planDesc')}</text>
+          <rect x="165" y="35" width="110" height="60" rx="10" fill="#161b22" stroke="#d29922" strokeWidth="1.5" />
+          <text x="220" y="60" textAnchor="middle" fill="#d29922" fontSize="11" fontWeight="700">{t('landing.planLabel')}</text>
+          <text x="220" y="77" textAnchor="middle" fill="#8b949e" fontSize="10">{t('landing.planDesc')}</text>
 
-          <line x1="160" y1="150" x2="215" y2="150" stroke="#484f58" strokeWidth="1.5" markerEnd="url(#arrow)" />
+          <line x1="275" y1="65" x2="320" y2="65" stroke="#484f58" strokeWidth="1.5" markerEnd="url(#arrow)" />
 
-          <rect x="220" y="120" width="120" height="60" rx="10" fill="#161b22" stroke="#58a6ff" strokeWidth="1.5" />
-          <text x="280" y="145" textAnchor="middle" fill="#58a6ff" fontSize="11" fontWeight="700">{t('landing.buildLabel')}</text>
-          <text x="280" y="162" textAnchor="middle" fill="#8b949e" fontSize="10">{t('landing.buildDesc')}</text>
+          <rect x="325" y="35" width="110" height="60" rx="10" fill="#161b22" stroke="#58a6ff" strokeWidth="1.5" />
+          <text x="380" y="60" textAnchor="middle" fill="#58a6ff" fontSize="11" fontWeight="700">{t('landing.buildLabel')}</text>
+          <text x="380" y="77" textAnchor="middle" fill="#8b949e" fontSize="10">{t('landing.buildDesc')}</text>
 
-          <line x1="340" y1="150" x2="395" y2="150" stroke="#484f58" strokeWidth="1.5" markerEnd="url(#arrow)" />
+          <line x1="435" y1="65" x2="480" y2="65" stroke="#484f58" strokeWidth="1.5" markerEnd="url(#arrow)" />
 
-          <rect x="400" y="120" width="120" height="60" rx="10" fill="#161b22" stroke="#8b5cf6" strokeWidth="1.5" />
-          <text x="460" y="145" textAnchor="middle" fill="#8b5cf6" fontSize="11" fontWeight="700">{t('landing.evaluateLabel')}</text>
-          <text x="460" y="162" textAnchor="middle" fill="#8b949e" fontSize="10">{t('landing.evaluateDesc')}</text>
+          <rect x="485" y="35" width="120" height="60" rx="10" fill="#161b22" stroke="#8b5cf6" strokeWidth="1.5" />
+          <text x="545" y="60" textAnchor="middle" fill="#8b5cf6" fontSize="11" fontWeight="700">{t('landing.evaluateLabel')}</text>
+          <text x="545" y="77" textAnchor="middle" fill="#8b949e" fontSize="10">{t('landing.evaluateDesc')}</text>
 
-          <line x1="520" y1="150" x2="615" y2="150" stroke="#3fb950" strokeWidth="1.5" markerEnd="url(#arrow-green)" />
-          <text x="568" y="142" textAnchor="middle" fill="#3fb950" fontSize="10" fontWeight="600">{t('landing.pass')}</text>
+          <line x1="605" y1="65" x2="690" y2="65" stroke="#3fb950" strokeWidth="1.5" markerEnd="url(#arrow-green)" />
+          <text x="648" y="57" textAnchor="middle" fill="#3fb950" fontSize="10" fontWeight="600">{t('landing.pass')}</text>
 
-          <rect x="620" y="120" width="140" height="60" rx="10" fill="#161b22" stroke="#3fb950" strokeWidth="1.5" />
-          <text x="690" y="145" textAnchor="middle" fill="#3fb950" fontSize="11" fontWeight="700">{t('landing.nextFeature')}</text>
-          <text x="690" y="162" textAnchor="middle" fill="#8b949e" fontSize="10">{t('landing.orComplete')}</text>
+          <rect x="695" y="35" width="140" height="60" rx="10" fill="#161b22" stroke="#3fb950" strokeWidth="1.5" />
+          <text x="765" y="60" textAnchor="middle" fill="#3fb950" fontSize="11" fontWeight="700">{t('landing.nextFeature')}</text>
+          <text x="765" y="77" textAnchor="middle" fill="#8b949e" fontSize="10">{t('landing.orComplete')}</text>
 
-          <line x1="460" y1="180" x2="460" y2="225" stroke="#f85149" strokeWidth="1.5" markerEnd="url(#arrow-red)" />
-          <text x="475" y="210" fill="#f85149" fontSize="10" fontWeight="600">{t('landing.fail')}</text>
+          <line x1="545" y1="95" x2="545" y2="140" stroke="#f85149" strokeWidth="1.5" markerEnd="url(#arrow-red)" />
+          <text x="560" y="125" fill="#f85149" fontSize="10" fontWeight="600">{t('landing.fail')}</text>
 
-          <rect x="400" y="230" width="120" height="60" rx="10" fill="#161b22" stroke="#f85149" strokeWidth="1.5" />
-          <text x="460" y="255" textAnchor="middle" fill="#f85149" fontSize="11" fontWeight="700">{t('landing.repairLabel')}</text>
-          <text x="460" y="272" textAnchor="middle" fill="#8b949e" fontSize="10">{t('landing.repairDesc')}</text>
+          <rect x="485" y="145" width="120" height="60" rx="10" fill="#161b22" stroke="#f85149" strokeWidth="1.5" />
+          <text x="545" y="170" textAnchor="middle" fill="#f85149" fontSize="11" fontWeight="700">{t('landing.repairLabel')}</text>
+          <text x="545" y="187" textAnchor="middle" fill="#8b949e" fontSize="10">{t('landing.repairDesc')}</text>
 
-          <path d="M400 260 L280 260 L280 185" stroke="#58a6ff" strokeWidth="1.5" strokeDasharray="6 3" markerEnd="url(#arrow-blue)" fill="none" />
-          <text x="330" y="253" fill="#58a6ff" fontSize="10" fontWeight="600">{t('landing.retryLabel')}</text>
+          <path d="M485 175 L380 175 L380 100" stroke="#58a6ff" strokeWidth="1.5" strokeDasharray="6 3" markerEnd="url(#arrow-blue)" fill="none" />
+          <text x="422" y="168" fill="#58a6ff" fontSize="10" fontWeight="600">{t('landing.retryLabel')}</text>
 
-          <line x1="520" y1="260" x2="615" y2="260" stroke="#f85149" strokeWidth="1.5" strokeDasharray="4 3" markerEnd="url(#arrow-red)" />
-          <text x="568" y="252" textAnchor="middle" fill="#484f58" fontSize="9">{t('landing.maxRetries')}</text>
+          <line x1="605" y1="175" x2="690" y2="175" stroke="#f85149" strokeWidth="1.5" strokeDasharray="4 3" markerEnd="url(#arrow-red)" />
+          <text x="648" y="167" textAnchor="middle" fill="#484f58" fontSize="9">{t('landing.maxRetries')}</text>
 
-          <rect x="620" y="230" width="140" height="60" rx="10" fill="#161b22" stroke="#484f58" strokeWidth="1.5" />
-          <text x="690" y="255" textAnchor="middle" fill="#f85149" fontSize="11" fontWeight="700">{t('landing.failedLabel')}</text>
-          <text x="690" y="272" textAnchor="middle" fill="#8b949e" fontSize="10">{t('landing.orContinue')}</text>
+          <rect x="695" y="145" width="140" height="60" rx="10" fill="#161b22" stroke="#484f58" strokeWidth="1.5" />
+          <text x="765" y="170" textAnchor="middle" fill="#f85149" fontSize="11" fontWeight="700">{t('landing.failedLabel')}</text>
+          <text x="765" y="187" textAnchor="middle" fill="#8b949e" fontSize="10">{t('landing.orContinue')}</text>
 
-          <text x="40" y="312" fill="#484f58" fontSize="9">{t('landing.diagramFooter')}</text>
+          <text x="10" y="232" fill="#484f58" fontSize="9">{t('landing.diagramFooter')}</text>
         </svg>
       </div>
     </section>

@@ -132,7 +132,12 @@ impl CodexCliWorker {
 
         let mut child = process
             .spawn()
-            .with_context(|| format!("failed to execute {}", self.config.binary))?;
+            .with_context(|| {
+                format!(
+                    "failed to execute `{}`. Is the Codex CLI installed and available in PATH?",
+                    self.config.binary
+                )
+            })?;
         let child_pid = child.id();
 
         if let Some(mut stdin) = child.stdin.take() {
@@ -551,6 +556,18 @@ fn format_stage_failure(
         stage.as_str(),
         status
     );
+
+    #[cfg(unix)]
+    if status.code() == Some(127) {
+        let _ = write!(
+            message,
+            "\n\nExit code 127 means \"command not found\". This usually indicates that \
+             the CLI binary (or a dependency like `node`) is not available in PATH.\n\
+             Current PATH: {}",
+            std::env::var("PATH").unwrap_or_else(|_| "(not set)".to_string())
+        );
+    }
+
     let _ = write!(
         message,
         "\ncommand: {}\

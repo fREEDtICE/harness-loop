@@ -171,6 +171,19 @@
     "buildResult": "Build Result",
     "evaluation": "Evaluation — {{status}}"
   },
+  "setup": {
+    "title": "Welcome to LoopSmith",
+    "subtitle": "Let's detect your environment and configure the default CLI tool.",
+    "scanning": "Scanning environment…",
+    "environment": "Environment",
+    "notInstalled": "Not installed",
+    "selectTool": "CLI Tool",
+    "selectModel": "Model",
+    "toolNotFound": "{{name}} was not found on your system.",
+    "nodeNotFound": "Node.js is required for Codex CLI but was not found.",
+    "complete": "Complete Setup",
+    "saving": "Saving…"
+  },
   "errors": {
     "unexpected": "Unexpected error"
   }

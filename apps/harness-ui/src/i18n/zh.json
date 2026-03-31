@@ -171,6 +171,19 @@
     "buildResult": "构建结果",
     "evaluation": "评估 — {{status}}"
   },
+  "setup": {
+    "title": "欢迎使用 LoopSmith",
+    "subtitle": "让我们检测您的环境并配置默认 CLI 工具。",
+    "scanning": "正在扫描环境…",
+    "environment": "环境检测",
+    "notInstalled": "未安装",
+    "selectTool": "CLI 工具",
+    "selectModel": "模型",
+    "toolNotFound": "{{name}} 未在系统中找到。",
+    "nodeNotFound": "Codex CLI 需要 Node.js，但未找到。",
+    "complete": "完成设置",
+    "saving": "保存中…"
+  },
   "errors": {
     "unexpected": "意外错误"
   }

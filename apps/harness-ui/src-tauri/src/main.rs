@@ -306,6 +306,24 @@ fn get_global_paths() -> Result<GlobalPaths, String> {
     })
 }
 
+#[tauri::command]
+fn probe_environment() -> Result<loopsmith_core::env_probe::EnvironmentReport, String> {
+    Ok(loopsmith_core::env_probe::probe_environment())
+}
+
+#[tauri::command]
+fn has_default_config() -> Result<bool, String> {
+    loopsmith_core::setup::has_default_config().map_err(render_error)
+}
+
+#[tauri::command]
+fn save_setup_config(kind: String, binary: String, model: String) -> Result<(), String> {
+    let home = home::loopsmith_home().map_err(render_error)?;
+    loopsmith_core::setup::write_config_non_interactive(&home, &kind, &binary, &model)
+        .map_err(render_error)?;
+    Ok(())
+}
+
 fn build_prompt_bundle(
     service: &HarnessUiService,
     config_path: &std::path::Path,
@@ -417,6 +435,13 @@ fn ui_state_snapshot_path() -> PathBuf {
 }
 
 fn main() {
+    let _log_guard = loopsmith_core::logging::init_logging()
+        .expect("failed to initialize logging");
+
+    if let Err(err) = loopsmith_core::shell_env::inherit_shell_env() {
+        eprintln!("warn: failed to inherit shell environment: {err}");
+    }
+
     home::ensure_global_home().expect("failed to initialize LoopSmith global home");
 
     tauri::Builder::default()
@@ -438,6 +463,9 @@ fn main() {
             read_workspace_config,
             write_workspace_config,
             get_global_paths,
+            probe_environment,
+            has_default_config,
+            save_setup_config,
             write_ui_state,
             read_stage_log,
             open_file,

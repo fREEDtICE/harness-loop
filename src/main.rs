@@ -2,9 +2,8 @@ use std::{fs, path::Path, path::PathBuf, process};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use loopsmith_core::{domain::RunState, home, paths::normalize_path, setup};
+use loopsmith_core::{domain::RunState, home, logging, paths::normalize_path, setup, shell_env};
 use loopsmith_ui::service::{HarnessUiService, LaunchDraft};
-use tracing_subscriber::{EnvFilter, fmt};
 
 #[derive(Debug, Parser)]
 #[command(name = "loopsmith")]
@@ -49,7 +48,11 @@ enum Command {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    init_tracing();
+    let _log_guard = logging::init_logging()?;
+
+    if let Err(err) = shell_env::inherit_shell_env() {
+        eprintln!("warn: failed to inherit shell environment: {err}");
+    }
 
     let cli = Cli::parse();
 
@@ -232,16 +235,6 @@ fn print_run_state(state: &RunState) {
             );
         }
     }
-}
-
-fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::new(
-            "info,loopsmith_core=info,loopsmith_worker_claude=info,loopsmith_worker_codex=info,loopsmith_worker_gemini=info,loopsmith_worker_simulated=info",
-        )
-    });
-
-    fmt().with_env_filter(filter).with_target(false).init();
 }
 
 fn absolutize(path: &Path) -> Result<PathBuf> {
