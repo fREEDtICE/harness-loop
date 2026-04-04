@@ -1,3 +1,6 @@
+/.loopsmith/
+/.pnpm-store
+apps/harness-ui/src-tauri/target
 /.loopsmith-runs
 /.runs-live/
 /.runs/
