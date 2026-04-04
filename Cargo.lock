@@ -2277,6 +2277,7 @@ dependencies = [
  "serde",
  "tauri",
  "tauri-build",
+ "tracing",
 ]
 
 [[package]]

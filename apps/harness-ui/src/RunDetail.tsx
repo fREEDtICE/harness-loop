@@ -712,6 +712,67 @@ function stageLogKey(stage: RunStageRecord): string {
   return `${stage.stage}-${stage.attempt}`;
 }
 
+function stageStem(stage: string, attempt: number): string {
+  return `${stage}-${String(attempt).padStart(2, "0")}`;
+}
+
+function joinPath(base: string, ...parts: string[]): string {
+  const normalized = [base, ...parts]
+    .map((part, index) => {
+      const value = part.replace(/\\/g, "/");
+      if (index === 0) {
+        return value.replace(/\/+$/, "");
+      }
+      return value.replace(/^\/+|\/+$/g, "");
+    })
+    .filter(Boolean);
+  return normalized.join("/");
+}
+
+function buildLiveStageRecord(
+  workerRoot: string,
+  stage: string,
+  attempt: number,
+): RunStageRecord {
+  const stem = stageStem(stage, attempt);
+  return {
+    stage,
+    attempt,
+    status: "running",
+    artifact: joinPath(workerRoot, `${stem}-result.json`),
+    stdout_log: joinPath(workerRoot, "logs", `${stem}-stdout.log`),
+    stderr_log: joinPath(workerRoot, "logs", `${stem}-stderr.log`),
+    session_id: null,
+  };
+}
+
+function buildActivePlanStage(run: RunState): RunStageRecord | null {
+  const activeStage = run.active_stage;
+  if (!activeStage || activeStage.stage !== "plan") {
+    return null;
+  }
+  return buildLiveStageRecord(
+    joinPath(run.run_root, "worker"),
+    activeStage.stage,
+    activeStage.attempt,
+  );
+}
+
+function buildActiveFeatureStage(
+  run: RunState,
+  feature: FeatureRunState,
+): RunStageRecord | null {
+  const activeStage = run.active_stage;
+  if (!activeStage || activeStage.feature_id !== feature.feature_id) {
+    return null;
+  }
+  return buildLiveStageRecord(
+    joinPath(feature.feature_root, "worker"),
+    activeStage.stage,
+    activeStage.attempt,
+  );
+}
+
 function StageLogPanel({
   stage,
   isLive,
@@ -898,6 +959,7 @@ export default function RunDetail({
   const completedCount = run.features.filter(
     (f) => f.status === "done" || f.status === "passed" || f.status === "failed" || f.status === "skipped",
   ).length;
+  const planStage = run.plan_stage ?? buildActivePlanStage(run);
 
   return (
     <div className="run-detail" data-testid="run-detail">
@@ -952,14 +1014,14 @@ export default function RunDetail({
       <RequestSection requestFile={run.request_file} />
 
       <div className="nested-tl">
-        {run.plan_stage ? (
+        {planStage ? (
           <PlanStageNode
-            stage={run.plan_stage}
+            stage={planStage}
             planFile={run.plan_file}
             isLive={
               isLive &&
               run.active_stage?.stage === "plan" &&
-              run.active_stage?.attempt === run.plan_stage.attempt
+              run.active_stage?.attempt === planStage.attempt
             }
           />
         ) : null}
@@ -967,6 +1029,11 @@ export default function RunDetail({
         {run.features.map((feature, idx) => {
           const expanded = expandedFeatures.has(feature.feature_id);
           const isLast = idx === run.features.length - 1;
+          const activeStage = buildActiveFeatureStage(run, feature);
+          const stages = activeStage &&
+            !feature.stages.some((stage) => stageLogKey(stage) === stageLogKey(activeStage))
+            ? [...feature.stages, activeStage]
+            : feature.stages;
 
           return (
             <div
@@ -1007,7 +1074,7 @@ export default function RunDetail({
               {expanded ? (
                 <div className="nested-tl-feature-stages">
                   <FeatureArtifacts feature={feature} workspacePath={run.source_workspace} />
-                  {feature.stages.map((stage) => (
+                  {stages.map((stage) => (
                     <StageNode
                       key={stageLogKey(stage)}
                       stage={stage}

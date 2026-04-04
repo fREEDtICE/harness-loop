@@ -241,26 +241,47 @@ function buildSnapshot(props: UIStateReporterProps): UIStateSnapshot {
           ? `${activeRun.active_stage.stage} attempt ${activeRun.active_stage.attempt}`
           : null,
         featureCount: activeRun?.features.length ?? 0,
-        features: (activeRun?.features ?? []).map((f) => ({
-          testid: `monitor-feature-${f.feature_id}`,
-          featureId: f.feature_id,
-          title: f.title,
-          status: f.status,
-          phase: f.phase,
-          repairAttemptsUsed: f.repair_attempts_used,
-          stageCount: f.stages.length,
-          stages: f.stages.map((s) => ({
-            stage: s.stage,
-            attempt: s.attempt,
-            status: s.status,
-          })),
-        })),
+        features: (activeRun?.features ?? []).map((f) => {
+          const liveStage = activeRun?.active_stage &&
+            activeRun.active_stage.feature_id === f.feature_id &&
+            !f.stages.some(
+              (s) =>
+                s.stage === activeRun.active_stage!.stage &&
+                s.attempt === activeRun.active_stage!.attempt,
+            )
+            ? {
+                stage: activeRun.active_stage.stage,
+                attempt: activeRun.active_stage.attempt,
+                status: "running" as const,
+              }
+            : null;
+          const stages = liveStage ? [...f.stages, liveStage] : f.stages;
+          return {
+            testid: `monitor-feature-${f.feature_id}`,
+            featureId: f.feature_id,
+            title: f.title,
+            status: f.status,
+            phase: f.phase,
+            repairAttemptsUsed: f.repair_attempts_used,
+            stageCount: stages.length,
+            stages: stages.map((s) => ({
+              stage: s.stage,
+              attempt: s.attempt,
+              status: s.status,
+            })),
+          };
+        }),
         planStage: activeRun?.plan_stage
           ? {
               attempt: activeRun.plan_stage.attempt,
               status: activeRun.plan_stage.status,
             }
-          : null,
+          : activeRun?.active_stage?.stage === "plan"
+            ? {
+                attempt: activeRun.active_stage.attempt,
+                status: "running",
+              }
+            : null,
       },
     },
     globalState: {

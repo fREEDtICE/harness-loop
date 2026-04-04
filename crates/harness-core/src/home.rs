@@ -71,8 +71,17 @@ const GLOBAL_TEMPLATES: &[TemplateFile] = &[
     },
 ];
 
-/// Returns the global LoopSmith home directory (`~/.loopsmith`).
+/// Returns the global LoopSmith home directory.
+///
+/// Resolution order:
+/// 1. `LOOPSMITH_HOME` environment variable (if set and non-empty)
+/// 2. `~/.loopsmith` (default)
 pub fn loopsmith_home() -> Result<PathBuf> {
+    if let Ok(override_path) = std::env::var("LOOPSMITH_HOME") {
+        if !override_path.is_empty() {
+            return Ok(PathBuf::from(override_path));
+        }
+    }
     let home = dirs::home_dir().context("unable to determine home directory")?;
     Ok(home.join(LOOPSMITH_DIR))
 }

@@ -127,7 +127,8 @@
     "dimensions": "维度",
     "requireScreenshots": "要求截图",
     "commands": "命令",
-    "language": "语言"
+    "language": "语言",
+    "quickSetup": "快速设置"
   },
   "landing": {
     "entropyTitle": "熵增问题",
@@ -175,6 +176,14 @@
     "title": "欢迎使用 LoopSmith",
     "subtitle": "让我们检测您的环境并配置默认 CLI 工具。",
     "scanning": "正在扫描环境…",
+    "scanSteps": {
+      "detectShellEnvironment": "正在检测 Shell 环境…",
+      "detectNode": "正在查找 Node.js…",
+      "detectCodex": "正在检查 Codex CLI…",
+      "detectClaude": "正在检查 Claude Code…",
+      "detectGemini": "正在检查 Gemini CLI…",
+      "resolveVersions": "正在解析版本信息…"
+    },
     "environment": "环境检测",
     "notInstalled": "未安装",
     "selectTool": "CLI 工具",

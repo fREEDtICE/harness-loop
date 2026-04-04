@@ -16,6 +16,13 @@ import NewRunPanel from "./NewRunPanel";
 import ProjectSettingsPanel from "./ProjectSettingsPanel";
 import { useTranslation } from "react-i18next";
 import { basename, currentOverrides, readError } from "./utils";
+import {
+  canCommitInspectRunResponse,
+  createInspectRunRequest,
+  createSelectedRunInspectTarget,
+  invalidateInspectRunRequestIfCurrent,
+  updateSelectedRunInspectTarget,
+} from "./runSelectionFreshness";
 import type {
   EditorState,
   LaunchDraft,
@@ -39,8 +46,10 @@ export default function App() {
   const [showNewRun, setShowNewRun] = useState(false);
   const [showProjectSettings, setShowProjectSettings] = useState(false);
   const [selectedRunRoot, setSelectedRunRoot] = useState<string | null>(null);
+  const [selectedRun, setSelectedRun] = useState<RunState | null>(null);
   const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
   const pollTimerRef = useRef<number | null>(null);
+  const selectedRunTargetRef = useRef(createSelectedRunInspectTarget());
 
   useEffect(() => {
     invoke<boolean>("has_default_config")
@@ -49,16 +58,37 @@ export default function App() {
     void refreshWorkspaces();
   }, []);
 
-  const promptDefaults = workspace?.prompts?.defaults ?? null;
-  const activeRunRoot = workspace?.current_run?.run_root ?? workspace?.runs.find((run) => run.lifecycle === "running")?.run_root ?? null;
+  function updateSelectedRunState(
+    workspacePath: string | null,
+    runRoot: string | null,
+    run: RunState | null,
+  ) {
+    selectedRunTargetRef.current = updateSelectedRunInspectTarget(
+      selectedRunTargetRef.current,
+      workspacePath,
+      runRoot,
+    );
+    setSelectedRunRoot(runRoot);
+    setSelectedRun(run);
+  }
 
-  const selectedRun = selectedRunRoot
+  const promptDefaults = workspace?.prompts?.defaults ?? null;
+  const activeRunRoot = workspace?.runs.find((run) => run.lifecycle === "running")?.run_root
+    ?? (workspace?.current_run?.lifecycle === "running" ? workspace.current_run.run_root : null);
+
+  const detailRun = selectedRunRoot
     ? workspace?.current_run?.run_root === selectedRunRoot
       ? workspace.current_run
+      : selectedRun?.run_root === selectedRunRoot
+        ? selectedRun
       : null
     : null;
 
-  const isLive = selectedRun?.lifecycle === "running";
+  const reporterWorkspace = workspace && detailRun
+    ? { ...workspace, current_run: detailRun }
+    : workspace;
+
+  const isLive = detailRun?.lifecycle === "running";
 
   useEffect(() => {
     if (!selectedWorkspacePath) {
@@ -112,7 +142,7 @@ export default function App() {
 
     if (!workspacePath) return;
 
-    setSelectedRunRoot(null);
+    updateSelectedRunState(workspacePath, null, null);
     startUiTransition(() => {
       setSelectedWorkspacePath(workspacePath);
     });
@@ -125,13 +155,10 @@ export default function App() {
       startTransition(() => {
         setWorkspace((current) => {
           if (!current) return payload;
-          const next = {
-            ...payload,
-            current_run: current.current_run,
-          };
+          const next = payload;
           if (JSON.stringify(current.record) === JSON.stringify(next.record)
             && JSON.stringify(current.runs) === JSON.stringify(next.runs)
-            && current.current_run === next.current_run
+            && JSON.stringify(current.current_run) === JSON.stringify(next.current_run)
             && JSON.stringify(current.prompts) === JSON.stringify(next.prompts)
             && current.config_error === next.config_error) {
             return current;
@@ -176,7 +203,7 @@ export default function App() {
         setSelectedWorkspacePath(null);
         setWorkspace(null);
         setEditors(null);
-        setSelectedRunRoot(null);
+        updateSelectedRunState(null, null, null);
       }
     } catch (error) {
       setErrorMessage(readError(error));
@@ -184,19 +211,21 @@ export default function App() {
   }
 
   async function inspectRun(runRoot: string) {
-    if (!selectedWorkspacePath) return;
+    const request = createInspectRunRequest(selectedRunTargetRef.current, runRoot);
+    if (!request) return;
     try {
       const run = await invoke<RunState>("inspect_run", {
-        workspacePath: selectedWorkspacePath,
-        runRoot,
+        workspacePath: request.workspacePath,
+        runRoot: request.runRoot,
       });
-      setWorkspace((current) => {
-        if (!current) return current;
-        const prev = current.current_run;
-        if (prev && JSON.stringify(prev) === JSON.stringify(run)) {
+      if (!canCommitInspectRunResponse(selectedRunTargetRef.current, request, run.run_root)) {
+        return;
+      }
+      setSelectedRun((current) => {
+        if (current && JSON.stringify(current) === JSON.stringify(run)) {
           return current;
         }
-        return { ...current, current_run: run };
+        return run;
       });
     } catch (error) {
       setErrorMessage(readError(error));
@@ -204,7 +233,14 @@ export default function App() {
   }
 
   async function handleSelectRun(runRoot: string) {
-    setSelectedRunRoot(runRoot);
+    if (!selectedWorkspacePath) return;
+    updateSelectedRunState(
+      selectedWorkspacePath,
+      runRoot,
+      workspace?.current_run?.run_root === runRoot
+        ? workspace.current_run
+        : null,
+    );
     await inspectRun(runRoot);
   }
 
@@ -229,7 +265,7 @@ export default function App() {
       setWorkspace((current) =>
         current ? { ...current, current_run: run } : current,
       );
-      setSelectedRunRoot(run.run_root);
+      updateSelectedRunState(selectedWorkspacePath, run.run_root, run);
       setStatusMessage(t('app.runCompleted'));
       await refreshWorkspace(selectedWorkspacePath, false);
     } catch (error) {
@@ -242,6 +278,14 @@ export default function App() {
 
   async function resumeRun(runRoot: string) {
     if (!selectedWorkspacePath) return;
+    updateSelectedRunState(
+      selectedWorkspacePath,
+      runRoot,
+      workspace?.current_run?.run_root === runRoot
+        ? workspace.current_run
+        : null,
+    );
+    void inspectRun(runRoot);
     setIsRunning(true);
     setStatusMessage(t('app.resuming', { name: basename(runRoot) }));
     setErrorMessage(null);
@@ -254,7 +298,12 @@ export default function App() {
       setWorkspace((current) =>
         current ? { ...current, current_run: run } : current,
       );
-      setSelectedRunRoot(run.run_root);
+      selectedRunTargetRef.current = invalidateInspectRunRequestIfCurrent(
+        selectedRunTargetRef.current,
+        selectedWorkspacePath,
+        run.run_root,
+      );
+      setSelectedRun(run);
       setStatusMessage(t('app.resumeCompleted'));
       await refreshWorkspace(selectedWorkspacePath, false);
     } catch (error) {
@@ -269,7 +318,7 @@ export default function App() {
     setSelectedWorkspacePath(null);
     setWorkspace(null);
     setEditors(null);
-    setSelectedRunRoot(null);
+    updateSelectedRunState(null, null, null);
   }
 
   function renderContent() {
@@ -279,13 +328,13 @@ export default function App() {
 
     if (!workspace) return <HarnessLanding />;
 
-    if (selectedRunRoot && selectedRun) {
+    if (selectedRunRoot && detailRun) {
       return (
         <RunDetail
-          run={selectedRun}
+          run={detailRun}
           isRunning={isRunning}
           isLive={isLive}
-          onBack={() => setSelectedRunRoot(null)}
+          onBack={() => updateSelectedRunState(selectedWorkspacePath, null, null)}
           onResume={resumeRun}
         />
       );
@@ -310,7 +359,7 @@ export default function App() {
       <UIStateReporter
         workspaces={workspaces}
         selectedWorkspacePath={selectedWorkspacePath}
-        workspace={workspace}
+        workspace={reporterWorkspace}
         editors={editors}
         statusMessage={statusMessage}
         errorMessage={errorMessage}

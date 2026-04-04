@@ -35,6 +35,7 @@ interface EnvironmentReport {
 
 interface SetupWizardProps {
   onComplete: () => void;
+  onCancel?: () => void;
 }
 
 const MODELS: Record<WorkerKind, { value: string; label: string }[]> = {
@@ -64,14 +65,14 @@ const DEFAULT_BINARIES: Record<WorkerKind, string> = {
   gemini_cli: "gemini",
 };
 
-const SCAN_STEPS: string[] = [
-  "Detecting shell environment…",
-  "Looking for Node.js…",
-  "Checking Codex CLI…",
-  "Checking Claude Code…",
-  "Checking Gemini CLI…",
-  "Resolving versions…",
-];
+const SCAN_STEP_KEYS = [
+  "setup.scanSteps.detectShellEnvironment",
+  "setup.scanSteps.detectNode",
+  "setup.scanSteps.detectCodex",
+  "setup.scanSteps.detectClaude",
+  "setup.scanSteps.detectGemini",
+  "setup.scanSteps.resolveVersions",
+] as const;
 
 function toolKindForName(name: string): WorkerKind | null {
   if (name === "codex_cli") return "codex_cli";
@@ -80,7 +81,7 @@ function toolKindForName(name: string): WorkerKind | null {
   return null;
 }
 
-export default function SetupWizard({ onComplete }: SetupWizardProps) {
+export default function SetupWizard({ onComplete, onCancel }: SetupWizardProps) {
   const { t } = useTranslation();
   const [report, setReport] = useState<EnvironmentReport | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -93,7 +94,7 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
   useEffect(() => {
     const interval = setInterval(() => {
       setScanStep((s) => {
-        if (s >= SCAN_STEPS.length - 1) {
+        if (s >= SCAN_STEP_KEYS.length - 1) {
           clearInterval(interval);
           return s;
         }
@@ -101,11 +102,11 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
       });
     }, 600);
 
-    const minDelay = new Promise<void>((r) => setTimeout(r, SCAN_STEPS.length * 600 + 400));
+    const minDelay = new Promise<void>((r) => setTimeout(r, SCAN_STEP_KEYS.length * 600 + 400));
     const probe = probeEnvironment();
 
     void Promise.all([probe, minDelay]).then(() => {
-      setScanStep(SCAN_STEPS.length);
+      setScanStep(SCAN_STEP_KEYS.length);
       setTimeout(() => setScanDone(true), 300);
     });
 
@@ -181,8 +182,17 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
   const currentWarnings = warnings();
 
   return (
-    <div className="setup-overlay" data-testid="setup-wizard">
-      <div className="setup-panel">
+    <div
+      className="setup-overlay"
+      data-testid="setup-wizard"
+      onClick={(event) => {
+        event.stopPropagation();
+        if (event.target === event.currentTarget) {
+          onCancel?.();
+        }
+      }}
+    >
+      <div className="setup-panel" onClick={(event) => event.stopPropagation()}>
         <div className="setup-header">
           <h2>{t("setup.title")}</h2>
           <p className="setup-subtitle">{t("setup.subtitle")}</p>
@@ -194,9 +204,9 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
               <div className="setup-scanning-spinner" />
               <div className="setup-scanning-title">{t("setup.scanning")}</div>
               <div className="setup-scanning-steps">
-                {SCAN_STEPS.map((step, i) => (
+                {SCAN_STEP_KEYS.map((stepKey, i) => (
                   <div
-                    key={step}
+                    key={stepKey}
                     className={`setup-scanning-step ${
                       i < scanStep ? "done" : i === scanStep ? "active" : ""
                     }`}
@@ -204,7 +214,7 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
                     <span className="setup-scanning-step-dot">
                       {i < scanStep ? "✓" : i === scanStep ? "⟳" : "·"}
                     </span>
-                    {step}
+                    {t(stepKey)}
                   </div>
                 ))}
               </div>
@@ -325,6 +335,11 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
               )}
 
               <div className="setup-actions">
+                {onCancel && (
+                  <button className="secondary-button" onClick={onCancel}>
+                    {t("actions.cancel")}
+                  </button>
+                )}
                 <button
                   className="primary-button"
                   data-testid="setup-complete"

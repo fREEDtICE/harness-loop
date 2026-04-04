@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { parse, stringify } from "smol-toml";
 import { changeLocale } from "./i18n";
 import { readError } from "./utils";
+import SetupWizard from "./SetupWizard";
 
 type WorkerKind = "codex_cli" | "claude_cli" | "gemini_cli" | "simulated";
 type IsolationMode = "direct" | "git_worktree";
@@ -502,6 +503,7 @@ export default function SettingsPanel({
   const [saving, setSaving] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [editingPrompt, setEditingPrompt] = useState<"planner" | "builder" | "evaluator" | null>(null);
+  const [showWizard, setShowWizard] = useState(false);
 
   useEffect(() => {
     void loadSettings();
@@ -564,7 +566,16 @@ export default function SettingsPanel({
         ) : (
           <div className="settings-body">
             <div className="settings-section">
-              <h3>{t('settings.defaultConfig')}</h3>
+              <div className="settings-section-header">
+                <h3>{t('settings.defaultConfig')}</h3>
+                <button
+                  className="quick-setup-btn"
+                  onClick={() => setShowWizard(true)}
+                  title={t('settings.quickSetup')}
+                >
+                  ⚡ {t('settings.quickSetup')}
+                </button>
+              </div>
               <p className="settings-hint">{t('settings.changesApply')}</p>
 
               {parseError ? (
@@ -725,6 +736,16 @@ export default function SettingsPanel({
           onClose={() => setEditingPrompt(null)}
         />
       ) : null}
+
+      {showWizard && (
+        <SetupWizard
+          onComplete={() => {
+            setShowWizard(false);
+            void loadSettings();
+          }}
+          onCancel={() => setShowWizard(false)}
+        />
+      )}
     </div>
   );
 }

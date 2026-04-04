@@ -1634,6 +1634,34 @@ textarea:focus {
   margin: 0 0 4px 0;
 }
 
+.settings-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.settings-section-header h3 {
+  margin: 0;
+}
+
+.quick-setup-btn {
+  background: transparent;
+  color: #58a6ff;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 4px 12px;
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.quick-setup-btn:hover {
+  background: #161b22;
+  border-color: #58a6ff;
+}
+
 .settings-hint {
   font-size: 0.8rem;
   color: #8b949e;

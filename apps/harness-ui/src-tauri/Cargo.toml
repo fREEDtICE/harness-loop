@@ -13,5 +13,6 @@ chrono.workspace = true
 rfd = "0.15"
 serde.workspace = true
 tauri = { version = "2", features = [] }
+tracing.workspace = true
 loopsmith-core = { path = "../../../crates/harness-core" }
 loopsmith-ui = { path = "../../../crates/harness-ui" }

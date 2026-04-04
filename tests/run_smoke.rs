@@ -1663,6 +1663,7 @@ struct SmokeFixture {
     request_file: PathBuf,
     workspace_dir: PathBuf,
     runs_dir: PathBuf,
+    loopsmith_home: PathBuf,
 }
 
 impl SmokeFixture {
@@ -1720,6 +1721,7 @@ impl SmokeFixture {
         let schemas_dir = project_root.join("schemas");
         let workspace_dir = project_root.join("workspace");
         let runs_dir = project_root.join(".loopsmith-runs");
+        let loopsmith_home = project_root.join(".loopsmith-home");
 
         for dir in [
             &config_dir,
@@ -1728,6 +1730,7 @@ impl SmokeFixture {
             &schemas_dir,
             &workspace_dir,
             &runs_dir,
+            &loopsmith_home,
         ] {
             fs::create_dir_all(dir)?;
         }
@@ -1915,6 +1918,7 @@ commands = [
             request_file,
             workspace_dir,
             runs_dir,
+            loopsmith_home,
         })
     }
 
@@ -1924,6 +1928,7 @@ commands = [
         let mut command = Command::new(env!("CARGO_BIN_EXE_loopsmith"));
         command
             .current_dir(&self.project_root)
+            .env("LOOPSMITH_HOME", &self.loopsmith_home)
             .arg("run")
             .arg("--config")
             .arg(&self.config_path)
@@ -1942,6 +1947,7 @@ commands = [
     fn resume(&self, run_root: &Path) -> Result<Output, Box<dyn Error>> {
         Ok(Command::new(env!("CARGO_BIN_EXE_loopsmith"))
             .current_dir(&self.project_root)
+            .env("LOOPSMITH_HOME", &self.loopsmith_home)
             .arg("resume")
             .arg("--config")
             .arg(&self.config_path)
@@ -1953,6 +1959,7 @@ commands = [
     fn inspect(&self, run_root: &Path) -> Result<Output, Box<dyn Error>> {
         Ok(Command::new(env!("CARGO_BIN_EXE_loopsmith"))
             .current_dir(&self.project_root)
+            .env("LOOPSMITH_HOME", &self.loopsmith_home)
             .arg("inspect")
             .arg("--config")
             .arg(&self.config_path)

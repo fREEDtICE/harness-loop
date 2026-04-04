@@ -1,7 +1,4 @@
-use std::{
-    path::PathBuf,
-    sync::Mutex,
-};
+use std::{path::PathBuf, sync::Mutex};
 
 use chrono::Utc;
 use loopsmith_core::{
@@ -14,6 +11,7 @@ use loopsmith_ui::{HarnessUiService, LaunchDraft, WorkspaceRunSummary};
 use rfd::FileDialog;
 use serde::Serialize;
 use tauri::{Manager, State};
+use tracing::debug;
 
 struct AppState {
     service: HarnessUiService,
@@ -89,8 +87,7 @@ fn load_workspace(
         .validate_workspace_path(PathBuf::from(workspace_path))
         .map_err(render_error)?;
 
-    let config_path =
-        home::ensure_workspace_config(&workspace_path).map_err(render_error)?;
+    let config_path = home::ensure_workspace_config(&workspace_path).map_err(render_error)?;
 
     let display_name = workspace_path
         .file_name()
@@ -141,6 +138,21 @@ fn load_workspace(
     if let Some(run_root) = runs.first().map(|r| r.run_root.clone()) {
         current_run = state.service.inspect_run(&config_path, &run_root).ok();
     }
+
+    debug!(
+        workspace_path = %workspace_path.display(),
+        config_path = %config_path.display(),
+        run_count = runs.len(),
+        current_run_root = current_run
+            .as_ref()
+            .map(|run| run.run_root.display().to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        current_run_lifecycle = current_run
+            .as_ref()
+            .map(|run| run.lifecycle.as_str())
+            .unwrap_or("-"),
+        "loaded workspace payload"
+    );
 
     Ok(WorkspacePayload {
         record,
@@ -195,10 +207,24 @@ fn inspect_run(
 ) -> Result<RunState, String> {
     let workspace_path = normalize_path(PathBuf::from(workspace_path));
     let config_path = home::workspace_config_path(&workspace_path);
-    state
+    let run_root = normalize_path(PathBuf::from(run_root));
+    let run = state
         .service
-        .inspect_run(config_path, normalize_path(PathBuf::from(run_root)))
-        .map_err(render_error)
+        .inspect_run(config_path, run_root.clone())
+        .map_err(render_error)?;
+    debug!(
+        run_root = %run_root.display(),
+        lifecycle = ?run.lifecycle,
+        active_stage = run
+            .active_stage
+            .as_ref()
+            .map(|stage| stage.stage.as_str())
+            .unwrap_or("-"),
+        active_attempt = run.active_stage.as_ref().map(|stage| stage.attempt).unwrap_or(0),
+        feature_count = run.features.len(),
+        "inspected run for UI"
+    );
+    Ok(run)
 }
 
 #[tauri::command]
@@ -214,11 +240,28 @@ async fn resume_run(
 ) -> Result<RunState, String> {
     let workspace_path = normalize_path(PathBuf::from(workspace_path));
     let config_path = home::workspace_config_path(&workspace_path);
-    state
+    let run_root = normalize_path(PathBuf::from(run_root));
+    debug!(
+        workspace_path = %workspace_path.display(),
+        run_root = %run_root.display(),
+        "resume_run command invoked from UI"
+    );
+    let run = state
         .service
-        .resume_run(config_path, normalize_path(PathBuf::from(run_root)))
+        .resume_run(config_path, run_root.clone())
         .await
-        .map_err(render_error)
+        .map_err(render_error)?;
+    debug!(
+        run_root = %run_root.display(),
+        lifecycle = ?run.lifecycle,
+        active_stage = run
+            .active_stage
+            .as_ref()
+            .map(|stage| stage.stage.as_str())
+            .unwrap_or("-"),
+        "resume_run command completed"
+    );
+    Ok(run)
 }
 
 #[tauri::command]
@@ -345,9 +388,16 @@ fn build_prompt_bundle(
 fn read_stage_log(path: String) -> Result<String, String> {
     let path = PathBuf::from(path);
     if !path.exists() {
+        debug!(path = %path.display(), "read_stage_log requested missing path");
         return Ok(String::new());
     }
-    std::fs::read_to_string(&path).map_err(render_error)
+    let content = std::fs::read_to_string(&path).map_err(render_error)?;
+    debug!(
+        path = %path.display(),
+        bytes = content.len(),
+        "read_stage_log served stage output"
+    );
+    Ok(content)
 }
 
 #[tauri::command]
@@ -435,8 +485,7 @@ fn ui_state_snapshot_path() -> PathBuf {
 }
 
 fn main() {
-    let _log_guard = loopsmith_core::logging::init_logging()
-        .expect("failed to initialize logging");
+    let _log_guard = loopsmith_core::logging::init_logging().expect("failed to initialize logging");
 
     if let Err(err) = loopsmith_core::shell_env::inherit_shell_env() {
         eprintln!("warn: failed to inherit shell environment: {err}");

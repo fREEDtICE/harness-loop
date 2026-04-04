@@ -9,6 +9,7 @@ use loopsmith_core::{
         BuilderHandoff, EvaluationRequest, PlanningRequest, QaReport, WorkerResult, WorkerStage,
         WorkerStatus,
     },
+    shell_env::wrap_command_for_user_shell,
     worker::{WorkerAdapter, WorkerContext, render_worker_prompt},
 };
 use serde::Serialize;
@@ -118,9 +119,10 @@ impl CodexCliWorker {
             "starting codex worker stage"
         );
 
-        let mut process = Command::new(&self.config.binary);
+        let (shell_program, shell_args) = wrap_command_for_user_shell(&command);
+        let mut process = Command::new(&shell_program);
         process
-            .args(command.iter().skip(1))
+            .args(&shell_args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

@@ -127,7 +127,8 @@
     "dimensions": "Dimensions",
     "requireScreenshots": "Require Screenshots",
     "commands": "Commands",
-    "language": "Language"
+    "language": "Language",
+    "quickSetup": "Quick Setup"
   },
   "landing": {
     "entropyTitle": "The Entropy Problem",
@@ -175,6 +176,14 @@
     "title": "Welcome to LoopSmith",
     "subtitle": "Let's detect your environment and configure the default CLI tool.",
     "scanning": "Scanning environment…",
+    "scanSteps": {
+      "detectShellEnvironment": "Detecting shell environment…",
+      "detectNode": "Looking for Node.js…",
+      "detectCodex": "Checking Codex CLI…",
+      "detectClaude": "Checking Claude Code…",
+      "detectGemini": "Checking Gemini CLI…",
+      "resolveVersions": "Resolving versions…"
+    },
     "environment": "Environment",
     "notInstalled": "Not installed",
     "selectTool": "CLI Tool",
