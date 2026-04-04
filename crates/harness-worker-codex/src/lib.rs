@@ -5,12 +5,15 @@ use async_trait::async_trait;
 use loopsmith_core::{
     artifacts::{FeatureLayout, StageArtifactSet},
     config::CodexWorkerConfig,
+    discovery::{DiscoveryArtifactSet, WorkspaceDiscoveryRequest},
     domain::{
-        BuilderHandoff, EvaluationRequest, PlanningRequest, QaReport, WorkerResult, WorkerStage,
-        WorkerStatus,
+        BuilderHandoff, EvaluationRequest, PlanningRequest, QaReport, WorkerResult, WorkerStatus,
     },
     shell_env::wrap_command_for_user_shell,
-    worker::{WorkerAdapter, WorkerContext, render_worker_prompt},
+    worker::{
+        DiscoveryContext, DiscoveryWorkerResult, WorkerAdapter, WorkerContext,
+        render_discovery_prompt, render_worker_prompt,
+    },
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -28,6 +31,46 @@ impl CodexCliWorker {
         Self { config }
     }
 
+    async fn run_discovery_stage(
+        &self,
+        context: &DiscoveryContext,
+        artifacts: &DiscoveryArtifactSet,
+        request: &WorkspaceDiscoveryRequest,
+    ) -> Result<DiscoveryWorkerResult> {
+        let prompt = render_discovery_prompt(context, &context.workspace_profile_schema, request)?;
+        fs::write(&artifacts.prompt_file, &prompt)
+            .with_context(|| format!("failed to write {}", artifacts.prompt_file.display()))?;
+
+        let command = self.exec_command_for_workspace(
+            &context.workspace,
+            &context.workspace_profile_schema,
+            &artifacts.output_file,
+        );
+        let session_id = self
+            .execute_command(
+                &artifacts.prompt_file,
+                &artifacts.output_file,
+                &artifacts.stdout_log,
+                &artifacts.stderr_log,
+                command.clone(),
+                &prompt,
+                "discover",
+                1,
+            )
+            .await?;
+
+        Ok(DiscoveryWorkerResult {
+            status: WorkerStatus::Executed,
+            command,
+            prompt_file: artifacts.prompt_file.clone(),
+            output_file: artifacts.output_file.clone(),
+            stdout_log: artifacts.stdout_log.clone(),
+            stderr_log: artifacts.stderr_log.clone(),
+            notes: vec!["Execution completed.".to_string()],
+            session_id,
+        })
+    }
+
     async fn run_exec_stage<T: Serialize>(
         &self,
         context: &WorkerContext,
@@ -40,7 +83,7 @@ impl CodexCliWorker {
         let prompt = render_worker_prompt(
             context,
             feature,
-            artifacts.stage,
+            artifacts.stage.as_str(),
             template_path,
             schema_path,
             payload,
@@ -48,9 +91,35 @@ impl CodexCliWorker {
         fs::write(&artifacts.prompt_file, &prompt)
             .with_context(|| format!("failed to write {}", artifacts.prompt_file.display()))?;
 
-        let command = self.exec_command_for_stage(context, schema_path, &artifacts.output_file);
-        self.execute_command(artifacts, command, &prompt, artifacts.stage)
-            .await
+        let command = self.exec_command_for_workspace(
+            &context.workspace,
+            schema_path,
+            &artifacts.output_file,
+        );
+        let session_id = self
+            .execute_command(
+                &artifacts.prompt_file,
+                &artifacts.output_file,
+                &artifacts.stdout_log,
+                &artifacts.stderr_log,
+                command.clone(),
+                &prompt,
+                artifacts.stage.as_str(),
+                artifacts.attempt,
+            )
+            .await?;
+
+        Ok(WorkerResult {
+            stage: artifacts.stage,
+            status: WorkerStatus::Executed,
+            command,
+            prompt_file: artifacts.prompt_file.clone(),
+            output_file: artifacts.output_file.clone(),
+            stdout_log: artifacts.stdout_log.clone(),
+            stderr_log: artifacts.stderr_log.clone(),
+            notes: vec!["Execution completed.".to_string()],
+            session_id,
+        })
     }
 
     async fn run_repair_stage<T: Serialize>(
@@ -66,7 +135,7 @@ impl CodexCliWorker {
         let prompt = render_worker_prompt(
             context,
             Some(feature),
-            artifacts.stage,
+            artifacts.stage.as_str(),
             template_path,
             schema_path,
             payload,
@@ -82,40 +151,92 @@ impl CodexCliWorker {
                 workspace = %context.workspace.display(),
                 "resuming codex worker stage from prior session"
             );
-            let command =
-                self.resume_command_for_stage(context, session_id, &artifacts.output_file);
-            let mut result = self
-                .execute_command(artifacts, command, &prompt, artifacts.stage)
+            let command = self.resume_command_for_stage(
+                &context.workspace,
+                session_id,
+                &artifacts.output_file,
+            );
+            let mut returned_session = self
+                .execute_command(
+                    &artifacts.prompt_file,
+                    &artifacts.output_file,
+                    &artifacts.stdout_log,
+                    &artifacts.stderr_log,
+                    command.clone(),
+                    &prompt,
+                    artifacts.stage.as_str(),
+                    artifacts.attempt,
+                )
                 .await?;
 
-            if result.session_id.is_none() {
-                result.session_id = Some(session_id.to_string());
+            if returned_session.is_none() {
+                returned_session = Some(session_id.to_string());
             }
 
-            return Ok(result);
+            return Ok(WorkerResult {
+                stage: artifacts.stage,
+                status: WorkerStatus::Executed,
+                command,
+                prompt_file: artifacts.prompt_file.clone(),
+                output_file: artifacts.output_file.clone(),
+                stdout_log: artifacts.stdout_log.clone(),
+                stderr_log: artifacts.stderr_log.clone(),
+                notes: vec!["Execution completed.".to_string()],
+                session_id: returned_session,
+            });
         }
 
-        let command = self.exec_command_for_stage(context, schema_path, &artifacts.output_file);
-        self.execute_command(artifacts, command, &prompt, artifacts.stage)
-            .await
+        let command = self.exec_command_for_workspace(
+            &context.workspace,
+            schema_path,
+            &artifacts.output_file,
+        );
+        let session_id = self
+            .execute_command(
+                &artifacts.prompt_file,
+                &artifacts.output_file,
+                &artifacts.stdout_log,
+                &artifacts.stderr_log,
+                command.clone(),
+                &prompt,
+                artifacts.stage.as_str(),
+                artifacts.attempt,
+            )
+            .await?;
+
+        Ok(WorkerResult {
+            stage: artifacts.stage,
+            status: WorkerStatus::Executed,
+            command,
+            prompt_file: artifacts.prompt_file.clone(),
+            output_file: artifacts.output_file.clone(),
+            stdout_log: artifacts.stdout_log.clone(),
+            stderr_log: artifacts.stderr_log.clone(),
+            notes: vec!["Execution completed.".to_string()],
+            session_id,
+        })
     }
 
     async fn execute_command(
         &self,
-        artifacts: &StageArtifactSet,
+        prompt_file: &Path,
+        output_file: &Path,
+        stdout_log: &Path,
+        stderr_log: &Path,
         command: Vec<String>,
         prompt: &str,
-        stage: WorkerStage,
-    ) -> Result<WorkerResult> {
+        stage_label: &str,
+        attempt: usize,
+    ) -> Result<Option<String>> {
         let rendered_command = render_command(&command);
         info!(
-            stage = stage.as_str(),
-            attempt = artifacts.attempt,
+            stage = stage_label,
+            attempt,
             command = %rendered_command,
-            prompt_file = %artifacts.prompt_file.display(),
-            output_file = %artifacts.output_file.display(),
-            stdout_log = %artifacts.stdout_log.display(),
-            stderr_log = %artifacts.stderr_log.display(),
+            prompt_file = %prompt_file.display(),
+            output_file = %output_file.display(),
+            stdout_log = %stdout_log.display(),
+            stderr_log = %stderr_log.display(),
             "starting codex worker stage"
         );
 
@@ -156,8 +277,8 @@ impl CodexCliWorker {
             .take()
             .context("failed to capture codex stderr")?;
 
-        let stdout_log_path = artifacts.stdout_log.clone();
-        let stderr_log_path = artifacts.stderr_log.clone();
+        let stdout_log_path = stdout_log.to_path_buf();
+        let stderr_log_path = stderr_log.to_path_buf();
 
         let stdout_handle: tokio::task::JoinHandle<Result<Vec<u8>>> =
             tokio::spawn(async move { tee_stream_to_file(child_stdout, &stdout_log_path).await });
@@ -182,25 +303,24 @@ impl CodexCliWorker {
             Ok(status) => status,
             Err(error) => {
                 #[cfg(unix)]
-                log_cleanup_result(stage, artifacts.attempt, child_pid, &cleanup_result);
+                log_cleanup_result(stage_label, attempt, child_pid, &cleanup_result);
 
                 return Err(error).with_context(|| {
                     format!(
                         "failed while waiting for {} stage {}",
-                        self.config.binary,
-                        stage.as_str()
+                        self.config.binary, stage_label
                     )
                 });
             }
         };
 
         #[cfg(unix)]
-        log_cleanup_result(stage, artifacts.attempt, child_pid, &cleanup_result);
+        log_cleanup_result(stage_label, attempt, child_pid, &cleanup_result);
 
         let session_id = extract_session_id(&stdout_bytes);
         info!(
-            stage = stage.as_str(),
-            attempt = artifacts.attempt,
+            stage = stage_label,
+            attempt,
             status = %status,
             session_id = session_id.as_deref().unwrap_or("-"),
             "completed codex worker stage"
@@ -210,10 +330,13 @@ impl CodexCliWorker {
             anyhow::bail!(
                 "{}",
                 format_stage_failure(
-                    stage,
+                    stage_label,
                     &status,
                     &command,
-                    artifacts,
+                    prompt_file,
+                    output_file,
+                    stdout_log,
+                    stderr_log,
                     &stdout_bytes,
                     &stderr_bytes,
                     session_id.as_deref(),
@@ -221,22 +344,12 @@ impl CodexCliWorker {
             );
         }
 
-        Ok(WorkerResult {
-            stage,
-            status: WorkerStatus::Executed,
-            command,
-            prompt_file: artifacts.prompt_file.clone(),
-            output_file: artifacts.output_file.clone(),
-            stdout_log: artifacts.stdout_log.clone(),
-            stderr_log: artifacts.stderr_log.clone(),
-            notes: vec!["Execution completed.".to_string()],
-            session_id,
-        })
+        Ok(session_id)
     }
 
-    fn exec_command_for_stage(
+    fn exec_command_for_workspace(
         &self,
-        context: &WorkerContext,
+        workspace: &Path,
         schema_path: &Path,
         output_file: &Path,
     ) -> Vec<String> {
@@ -247,7 +360,7 @@ impl CodexCliWorker {
             "exec".to_string(),
             "--json".to_string(),
             "-C".to_string(),
-            context.workspace.display().to_string(),
+            workspace.display().to_string(),
             "-m".to_string(),
             self.config.model.clone(),
             "-s".to_string(),
@@ -275,7 +388,7 @@ impl CodexCliWorker {
 
     fn resume_command_for_stage(
         &self,
-        context: &WorkerContext,
+        workspace: &Path,
         session_id: &str,
         output_file: &Path,
     ) -> Vec<String> {
@@ -285,7 +398,7 @@ impl CodexCliWorker {
             "never".to_string(),
             "exec".to_string(),
             "-C".to_string(),
-            context.workspace.display().to_string(),
+            workspace.display().to_string(),
             "resume".to_string(),
             "--json".to_string(),
             "-m".to_string(),
@@ -406,21 +519,21 @@ fn send_signal(pid: u32, signal: libc::c_int) -> Result<()> {
 
 #[cfg(unix)]
 fn log_cleanup_result(
-    stage: WorkerStage,
+    stage_label: &str,
     attempt: usize,
     pid: Option<u32>,
     cleanup_result: &Result<bool>,
 ) {
     match cleanup_result {
         Ok(true) => info!(
-            stage = stage.as_str(),
+            stage = stage_label,
             attempt,
             pid = pid.unwrap_or_default(),
             "cleaned up lingering codex worker descendant processes"
         ),
         Ok(false) => {}
         Err(error) => warn!(
-            stage = stage.as_str(),
+            stage = stage_label,
             attempt,
             pid = pid.unwrap_or_default(),
             error = %error,
@@ -431,6 +544,15 @@ fn log_cleanup_result(
 
 #[async_trait]
 impl WorkerAdapter for CodexCliWorker {
+    async fn discover(
+        &self,
+        context: &DiscoveryContext,
+        artifacts: &DiscoveryArtifactSet,
+        request: &WorkspaceDiscoveryRequest,
+    ) -> Result<DiscoveryWorkerResult> {
+        self.run_discovery_stage(context, artifacts, request).await
+    }
+
     async fn plan(
         &self,
         context: &WorkerContext,
@@ -539,19 +661,18 @@ fn extract_session_id(stdout: &[u8]) -> Option<String> {
 }
 
 fn format_stage_failure(
-    stage: WorkerStage,
+    stage_label: &str,
     status: &std::process::ExitStatus,
     command: &[String],
-    artifacts: &StageArtifactSet,
+    prompt_file: &Path,
+    output_file: &Path,
+    stdout_log: &Path,
+    stderr_log: &Path,
     stdout: &[u8],
     stderr: &[u8],
     session_id: Option<&str>,
 ) -> String {
-    let mut message = format!(
-        "codex stage {} failed with status {}",
-        stage.as_str(),
-        status
-    );
+    let mut message = format!("codex stage {} failed with status {}", stage_label, status);
 
     #[cfg(unix)]
     if status.code() == Some(127) {
@@ -572,10 +693,10 @@ fn format_stage_failure(
 \nstdout_log: {}\
 \nstderr_log: {}",
         render_command(command),
-        artifacts.prompt_file.display(),
-        artifacts.output_file.display(),
-        artifacts.stdout_log.display(),
-        artifacts.stderr_log.display(),
+        prompt_file.display(),
+        output_file.display(),
+        stdout_log.display(),
+        stderr_log.display(),
     );
 
     if let Some(session_id) = session_id {
@@ -689,6 +810,7 @@ mod tests {
                 root: PathBuf::from("/tmp/run"),
                 inputs_dir: PathBuf::from("/tmp/run/inputs"),
                 prompt_inputs_dir: PathBuf::from("/tmp/run/inputs/prompts"),
+                workspace_profile_file: PathBuf::from("/tmp/run/inputs/workspace-profile.json"),
                 planner_prompt_file: PathBuf::from("/tmp/run/inputs/prompts/planner.md"),
                 builder_prompt_file: PathBuf::from("/tmp/run/inputs/prompts/builder.md"),
                 evaluator_prompt_file: PathBuf::from("/tmp/run/inputs/prompts/evaluator.md"),
@@ -707,10 +829,12 @@ mod tests {
             planner_schema: PathBuf::from("/tmp/schemas/plan.json"),
             builder_schema: PathBuf::from("/tmp/schemas/build.json"),
             qa_schema: PathBuf::from("/tmp/schemas/qa.json"),
+            workspace_profile_artifact: None,
+            workspace_profile_context: None,
         };
 
         let command = worker.resume_command_for_stage(
-            &context,
+            &context.workspace,
             "session-123",
             Path::new("/tmp/run/worker/outputs/repair-01-last-message.json"),
         );
@@ -819,6 +943,8 @@ printf '%s\n' '{{"type":"thread.started","thread_id":"session-123"}}'
             planner_schema: schemas_dir.join("planner.json"),
             builder_schema: schemas_dir.join("builder.json"),
             qa_schema: schemas_dir.join("qa.json"),
+            workspace_profile_artifact: None,
+            workspace_profile_context: None,
         };
         let artifacts = layout.stage_artifacts(WorkerStage::Plan, 1);
         let worker = CodexCliWorker::new(CodexWorkerConfig {

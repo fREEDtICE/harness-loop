@@ -9,18 +9,27 @@ use chrono::{DateTime, Utc};
 use loopsmith_core::{
     artifacts::{FileArtifactStore, StageArtifactSet},
     config::{AppConfig, PlannerWorkerConfig, ResolvedConfig, WorkerSelection},
+    discovery::{
+        WorkspaceDiscoveryPayload, WorkspaceDiscoveryRequest, WorkspaceDiscoveryStatus,
+        WorkspaceDiscoveryStore, WorkspaceProfile, WorkspaceProfileSelection, profile_fingerprint,
+        scan_workspace,
+    },
     domain::{
         BuilderHandoff, EvaluationRequest, FeatureContract, PromptOverrides, PromptSnapshot,
         QaReport, QaStatus, RunLifecycleStatus, RunRequest, RunState,
     },
     paths::normalize_path,
-    worker::{WorkerAdapter, WorkerContext},
+    worker::{DiscoveryContext, DiscoveryWorkerResult, WorkerAdapter, WorkerContext},
 };
 use loopsmith_worker_claude::ClaudeCliWorker;
 use loopsmith_worker_codex::CodexCliWorker;
 use loopsmith_worker_gemini::GeminiCliWorker;
 use loopsmith_worker_simulated::SimulatedWorker;
 use serde::{Deserialize, Serialize};
+
+const DEFAULT_DISCOVERY_PROMPT: &str = include_str!("../../../prompts/discovery.md");
+const DEFAULT_WORKSPACE_PROFILE_SCHEMA: &str =
+    include_str!("../../../schemas/workspace-profile.json");
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LaunchDraft {
@@ -97,6 +106,7 @@ impl HarnessUiService {
                 feature_limit: draft.feature_limit,
                 selected_config: Some(config_path),
                 prompt_overrides: draft.prompt_overrides,
+                workspace_profile: None,
             },
         })
     }
@@ -106,11 +116,33 @@ impl HarnessUiService {
         self.start_prepared_run(prepared).await
     }
 
-    pub async fn start_prepared_run(&self, prepared: PreparedLaunch) -> Result<RunState> {
-        with_selected_worker(prepared.resolved_config, |controller| async move {
-            controller.start_run(prepared.run_request).await
-        })
-        .await
+    pub async fn start_prepared_run(&self, mut prepared: PreparedLaunch) -> Result<RunState> {
+        let discovery_worker = build_discovery_worker(&prepared.resolved_config)?;
+        let workspace_profile = refresh_workspace_profile(
+            &prepared.resolved_config,
+            discovery_worker.as_ref(),
+            &prepared.run_request.source_workspace,
+        )
+        .await?;
+        prepared.run_request.workspace_profile = Some(workspace_profile);
+
+        let artifact_store =
+            FileArtifactStore::new(prepared.resolved_config.storage.runs_dir.clone());
+        let default_worker =
+            build_worker_from_selection(&prepared.resolved_config.worker.selection)?;
+        let worker: Box<dyn WorkerAdapter> =
+            if let Some(planner) = prepared.resolved_config.planner_worker() {
+                let planner_worker = build_worker_from_planner_config(planner)?;
+                Box::new(PlannerRoutedWorker::new(planner_worker, default_worker))
+            } else {
+                default_worker
+            };
+        let controller = loopsmith_core::controller::HarnessController::new(
+            prepared.resolved_config,
+            artifact_store,
+            worker,
+        );
+        controller.start_run(prepared.run_request).await
     }
 
     pub async fn resume_run(
@@ -236,6 +268,14 @@ impl HarnessUiService {
         runs.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
         Ok(runs)
     }
+
+    pub fn load_discovery_payload(
+        &self,
+        workspace_path: impl AsRef<Path>,
+    ) -> Result<Option<WorkspaceDiscoveryPayload>> {
+        let workspace_path = normalize_path(workspace_path.as_ref().to_path_buf());
+        WorkspaceDiscoveryStore::new(workspace_path).load_payload()
+    }
 }
 
 fn truncate_str(text: &str, max_chars: usize) -> String {
@@ -247,6 +287,199 @@ fn truncate_str(text: &str, max_chars: usize) -> String {
         let truncated: String = first_line.chars().take(max_chars).collect();
         format!("{truncated}…")
     }
+}
+
+fn build_discovery_worker(config: &ResolvedConfig) -> Result<Box<dyn WorkerAdapter>> {
+    if let Some(planner) = config.planner_worker() {
+        build_worker_from_planner_config(planner)
+    } else {
+        build_worker_from_selection(&config.worker.selection)
+    }
+}
+
+async fn refresh_workspace_profile(
+    config: &ResolvedConfig,
+    worker: &dyn WorkerAdapter,
+    workspace_path: &Path,
+) -> Result<WorkspaceProfileSelection> {
+    let workspace_path = normalize_path(workspace_path.to_path_buf());
+    ensure_discovery_assets(config)?;
+    let store = WorkspaceDiscoveryStore::new(&workspace_path);
+    store.ensure_dirs()?;
+
+    let scan = scan_workspace(&workspace_path)?;
+    let scan_path = store.scan_path();
+    let profile_path = store.profile_path();
+    let status_path = store.status_path();
+    store.save_scan(&scan)?;
+
+    let existing_status = store.load_status()?;
+    let existing_profile = store.load_profile()?;
+    let needs_refresh = existing_profile.is_none()
+        || existing_status
+            .as_ref()
+            .map(|status| status.workspace_fingerprint.as_str())
+            != Some(scan.workspace_fingerprint.as_str());
+
+    if !needs_refresh {
+        let profile = existing_profile.expect("profile checked above");
+        let profile_fingerprint = profile_fingerprint(&profile)?;
+        let last_refreshed_at = existing_status
+            .as_ref()
+            .and_then(|status| status.last_refreshed_at)
+            .unwrap_or(profile.generated_at);
+        let status = WorkspaceDiscoveryStatus {
+            workspace_path: workspace_path.clone(),
+            scan_path: scan_path.clone(),
+            profile_path: profile_path.clone(),
+            workspace_fingerprint: scan.workspace_fingerprint.clone(),
+            profile_fingerprint: Some(profile_fingerprint.clone()),
+            last_scanned_at: scan.scanned_at,
+            last_refreshed_at: Some(last_refreshed_at),
+            last_refresh_error: None,
+            used_fallback_profile: false,
+        };
+        store.save_status(&status)?;
+
+        return Ok(WorkspaceProfileSelection {
+            profile,
+            canonical_profile_path: profile_path,
+            scan_path,
+            status_path,
+            workspace_fingerprint: status.workspace_fingerprint,
+            profile_fingerprint,
+            last_scanned_at: status.last_scanned_at,
+            last_refreshed_at,
+            refresh_error: None,
+            used_fallback_profile: false,
+        });
+    }
+
+    let artifacts = store.worker_artifacts();
+    let context = DiscoveryContext {
+        workspace: workspace_path.clone(),
+        discovery_prompt: config.prompts.discovery.clone(),
+        workspace_profile_schema: config.schemas.workspace_profile.clone(),
+    };
+    let request = WorkspaceDiscoveryRequest {
+        scan: scan.clone(),
+        previous_profile: existing_profile.clone(),
+    };
+
+    match worker.discover(&context, &artifacts, &request).await {
+        Ok(result) => {
+            let bytes = fs::read(&artifacts.output_file)
+                .with_context(|| format!("failed to read {}", artifacts.output_file.display()))?;
+            let profile: WorkspaceProfile = serde_json::from_slice(&bytes)
+                .with_context(|| format!("failed to parse {}", artifacts.output_file.display()))?;
+            let profile_fingerprint = profile_fingerprint(&profile)?;
+            store.save_profile(&profile)?;
+            fs::write(
+                &artifacts.result_file,
+                serde_json::to_vec_pretty(&result)
+                    .context("failed to serialize discovery result")?,
+            )
+            .with_context(|| format!("failed to write {}", artifacts.result_file.display()))?;
+
+            let status = WorkspaceDiscoveryStatus {
+                workspace_path: workspace_path.clone(),
+                scan_path: scan_path.clone(),
+                profile_path: profile_path.clone(),
+                workspace_fingerprint: scan.workspace_fingerprint.clone(),
+                profile_fingerprint: Some(profile_fingerprint.clone()),
+                last_scanned_at: scan.scanned_at,
+                last_refreshed_at: Some(profile.generated_at),
+                last_refresh_error: None,
+                used_fallback_profile: false,
+            };
+            store.save_status(&status)?;
+
+            Ok(WorkspaceProfileSelection {
+                profile,
+                canonical_profile_path: profile_path,
+                scan_path,
+                status_path,
+                workspace_fingerprint: status.workspace_fingerprint,
+                profile_fingerprint,
+                last_scanned_at: status.last_scanned_at,
+                last_refreshed_at: status
+                    .last_refreshed_at
+                    .expect("freshly written discovery status should have refresh time"),
+                refresh_error: None,
+                used_fallback_profile: false,
+            })
+        }
+        Err(error) => {
+            let error_message = error.to_string();
+            if let Some(profile) = existing_profile {
+                let profile_fingerprint = profile_fingerprint(&profile)?;
+                let last_refreshed_at = existing_status
+                    .as_ref()
+                    .and_then(|status| status.last_refreshed_at)
+                    .unwrap_or(profile.generated_at);
+                let status = WorkspaceDiscoveryStatus {
+                    workspace_path: workspace_path.clone(),
+                    scan_path: scan_path.clone(),
+                    profile_path: profile_path.clone(),
+                    workspace_fingerprint: scan.workspace_fingerprint.clone(),
+                    profile_fingerprint: Some(profile_fingerprint.clone()),
+                    last_scanned_at: scan.scanned_at,
+                    last_refreshed_at: Some(last_refreshed_at),
+                    last_refresh_error: Some(error_message.clone()),
+                    used_fallback_profile: true,
+                };
+                store.save_status(&status)?;
+
+                return Ok(WorkspaceProfileSelection {
+                    profile,
+                    canonical_profile_path: profile_path,
+                    scan_path,
+                    status_path,
+                    workspace_fingerprint: status.workspace_fingerprint,
+                    profile_fingerprint,
+                    last_scanned_at: status.last_scanned_at,
+                    last_refreshed_at,
+                    refresh_error: Some(error_message),
+                    used_fallback_profile: true,
+                });
+            }
+
+            let status = WorkspaceDiscoveryStatus {
+                workspace_path,
+                scan_path,
+                profile_path,
+                workspace_fingerprint: scan.workspace_fingerprint,
+                profile_fingerprint: None,
+                last_scanned_at: scan.scanned_at,
+                last_refreshed_at: existing_status.and_then(|status| status.last_refreshed_at),
+                last_refresh_error: Some(error_message),
+                used_fallback_profile: false,
+            };
+            store.save_status(&status)?;
+            Err(error)
+        }
+    }
+}
+
+fn ensure_discovery_assets(config: &ResolvedConfig) -> Result<()> {
+    ensure_text_file(&config.prompts.discovery, DEFAULT_DISCOVERY_PROMPT)?;
+    ensure_text_file(
+        &config.schemas.workspace_profile,
+        DEFAULT_WORKSPACE_PROFILE_SCHEMA,
+    )?;
+    Ok(())
+}
+
+fn ensure_text_file(path: &Path, contents: &str) -> Result<()> {
+    if path.exists() {
+        return Ok(());
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create directory {}", parent.display()))?;
+    }
+    fs::write(path, contents).with_context(|| format!("failed to write {}", path.display()))
 }
 
 fn resolve_effective_prompts(
@@ -318,6 +551,15 @@ impl PlannerRoutedWorker {
 
 #[async_trait]
 impl WorkerAdapter for PlannerRoutedWorker {
+    async fn discover(
+        &self,
+        context: &DiscoveryContext,
+        artifacts: &loopsmith_core::discovery::DiscoveryArtifactSet,
+        request: &WorkspaceDiscoveryRequest,
+    ) -> Result<DiscoveryWorkerResult> {
+        self.planner.discover(context, artifacts, request).await
+    }
+
     async fn plan(
         &self,
         context: &WorkerContext,
@@ -427,15 +669,125 @@ fn verify_worker_binary(binary: &str, name: &str, install_hint: &str) -> Result<
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{
+        fs,
+        sync::{Arc, Mutex},
+    };
 
+    use anyhow::{Result, anyhow};
+    use async_trait::async_trait;
     use chrono::Utc;
     use tempfile::tempdir;
     use uuid::Uuid;
 
-    use loopsmith_core::domain::{PromptOverrides, RunLifecycleStatus, RunState};
+    use loopsmith_core::{
+        artifacts::{FeatureLayout, StageArtifactSet},
+        config::{
+            EvaluatorConfig, ResolvedConfig, ResolvedPromptConfig, ResolvedSchemaConfig,
+            ResolvedStorageConfig, RuntimeConfig, RuntimeSupervisionConfig, WorkerConfig,
+            WorkerSelection, WorkspaceConfig,
+        },
+        discovery::{DiscoveryArtifactSet, WorkspaceDiscoveryRequest, WorkspaceDiscoveryStore},
+        domain::{
+            BuilderHandoff, EvaluationRequest, FeatureContract, PromptOverrides, QaReport,
+            QaStatus, RunLifecycleStatus, RunState, WorkerResult, WorkerStatus,
+        },
+        worker::{DiscoveryContext, DiscoveryWorkerResult, WorkerAdapter, WorkerContext},
+        workspace::WorkspaceIsolation,
+    };
 
-    use super::{HarnessUiService, LaunchDraft};
+    use super::{HarnessUiService, LaunchDraft, refresh_workspace_profile};
+
+    #[derive(Default)]
+    struct FakeDiscoveryState {
+        discover_calls: usize,
+        fail_message: Option<String>,
+    }
+
+    struct FakeDiscoveryWorker {
+        state: Arc<Mutex<FakeDiscoveryState>>,
+    }
+
+    #[async_trait]
+    impl WorkerAdapter for FakeDiscoveryWorker {
+        async fn discover(
+            &self,
+            _context: &DiscoveryContext,
+            artifacts: &DiscoveryArtifactSet,
+            request: &WorkspaceDiscoveryRequest,
+        ) -> Result<DiscoveryWorkerResult> {
+            let mut state = self.state.lock().expect("lock");
+            state.discover_calls += 1;
+            if let Some(message) = state.fail_message.clone() {
+                return Err(anyhow!(message));
+            }
+
+            let mut profile = request.synthesize_profile();
+            profile.summary = format!("{} [refresh={}]", profile.summary, state.discover_calls);
+
+            fs::write(&artifacts.prompt_file, "fake discovery prompt\n").expect("write prompt");
+            fs::write(&artifacts.stdout_log, "fake discovery stdout\n").expect("write stdout");
+            fs::write(&artifacts.stderr_log, "").expect("write stderr");
+            fs::write(
+                &artifacts.output_file,
+                serde_json::to_vec_pretty(&profile).expect("serialize profile"),
+            )
+            .expect("write output");
+
+            Ok(DiscoveryWorkerResult {
+                status: WorkerStatus::Prepared,
+                command: vec!["fake".to_string(), "discover".to_string()],
+                prompt_file: artifacts.prompt_file.clone(),
+                output_file: artifacts.output_file.clone(),
+                stdout_log: artifacts.stdout_log.clone(),
+                stderr_log: artifacts.stderr_log.clone(),
+                notes: Vec::new(),
+                session_id: Some(format!("fake-discover-{:02}", state.discover_calls)),
+            })
+        }
+
+        async fn plan(
+            &self,
+            _context: &WorkerContext,
+            _artifacts: &StageArtifactSet,
+            _request: &loopsmith_core::domain::PlanningRequest,
+        ) -> Result<WorkerResult> {
+            Err(anyhow!("unexpected plan call in discovery test"))
+        }
+
+        async fn build(
+            &self,
+            _context: &WorkerContext,
+            _feature: &FeatureLayout,
+            _artifacts: &StageArtifactSet,
+            _contract: &FeatureContract,
+        ) -> Result<WorkerResult> {
+            Err(anyhow!("unexpected build call in discovery test"))
+        }
+
+        async fn evaluate(
+            &self,
+            _context: &WorkerContext,
+            _feature: &FeatureLayout,
+            _artifacts: &StageArtifactSet,
+            _request: &EvaluationRequest,
+        ) -> Result<WorkerResult> {
+            Err(anyhow!("unexpected evaluate call in discovery test"))
+        }
+
+        async fn repair(
+            &self,
+            _context: &WorkerContext,
+            _feature: &FeatureLayout,
+            _artifacts: &StageArtifactSet,
+            _contract: &FeatureContract,
+            _builder_handoff: &BuilderHandoff,
+            _qa_report: &QaReport,
+            _previous_session_id: Option<&str>,
+        ) -> Result<WorkerResult> {
+            Err(anyhow!("unexpected repair call in discovery test"))
+        }
+    }
 
     #[test]
     fn validate_workspace_path_accepts_hidden_directories() {
@@ -460,9 +812,11 @@ mod tests {
         fs::create_dir_all(&config_dir).expect("config dir");
         fs::create_dir_all(&prompts_dir).expect("prompts dir");
         fs::create_dir_all(&schemas_dir).expect("schemas dir");
+        fs::write(prompts_dir.join("discovery.md"), "discovery\n").expect("discovery");
         fs::write(prompts_dir.join("planner.md"), "planner\n").expect("planner");
         fs::write(prompts_dir.join("builder.md"), "builder\n").expect("builder");
         fs::write(prompts_dir.join("evaluator.md"), "evaluator\n").expect("evaluator");
+        fs::write(schemas_dir.join("workspace-profile.json"), "{}\n").expect("schema");
         fs::write(schemas_dir.join("planner-output.json"), "{}\n").expect("schema");
         fs::write(schemas_dir.join("builder-handoff.json"), "{}\n").expect("schema");
         fs::write(schemas_dir.join("qa-report.json"), "{}\n").expect("schema");
@@ -489,11 +843,13 @@ evaluator_statuses = ["pass"]
 session_prefix = "sim"
 
 [prompts]
+discovery = "prompts/discovery.md"
 planner = "prompts/planner.md"
 builder = "prompts/builder.md"
 evaluator = "prompts/evaluator.md"
 
 [schemas]
+workspace_profile = "schemas/workspace-profile.json"
 planner_output = "schemas/planner-output.json"
 builder_handoff = "schemas/builder-handoff.json"
 qa_report = "schemas/qa-report.json"
@@ -548,9 +904,11 @@ commands = []
         fs::create_dir_all(&runs_dir).expect("runs dir");
         fs::create_dir_all(&workspace).expect("workspace dir");
         fs::create_dir_all(&other_workspace).expect("other workspace dir");
+        fs::write(prompts_dir.join("discovery.md"), "discovery\n").expect("discovery");
         fs::write(prompts_dir.join("planner.md"), "planner\n").expect("planner");
         fs::write(prompts_dir.join("builder.md"), "builder\n").expect("builder");
         fs::write(prompts_dir.join("evaluator.md"), "evaluator\n").expect("evaluator");
+        fs::write(schemas_dir.join("workspace-profile.json"), "{}\n").expect("schema");
         fs::write(schemas_dir.join("planner-output.json"), "{}\n").expect("schema");
         fs::write(schemas_dir.join("builder-handoff.json"), "{}\n").expect("schema");
         fs::write(schemas_dir.join("qa-report.json"), "{}\n").expect("schema");
@@ -575,11 +933,13 @@ evaluator_statuses = ["pass"]
 session_prefix = "sim"
 
 [prompts]
+discovery = "prompts/discovery.md"
 planner = "prompts/planner.md"
 builder = "prompts/builder.md"
 evaluator = "prompts/evaluator.md"
 
 [schemas]
+workspace_profile = "schemas/workspace-profile.json"
 planner_output = "schemas/planner-output.json"
 builder_handoff = "schemas/builder-handoff.json"
 qa_report = "schemas/qa-report.json"
@@ -639,5 +999,219 @@ commands = []
             runs[0].run_root.file_name().and_then(|name| name.to_str()),
             Some("run-2")
         );
+    }
+
+    #[tokio::test]
+    async fn refresh_workspace_profile_persists_initial_profile() -> Result<()> {
+        let temp = tempdir()?;
+        let config = discovery_test_config(temp.path());
+        let workspace = discovery_test_workspace(temp.path())?;
+        let state = Arc::new(Mutex::new(FakeDiscoveryState::default()));
+        let worker = FakeDiscoveryWorker {
+            state: state.clone(),
+        };
+
+        let selection = refresh_workspace_profile(&config, &worker, &workspace).await?;
+        let store = WorkspaceDiscoveryStore::new(&workspace);
+        let payload = store.load_payload()?.expect("payload");
+
+        assert_eq!(state.lock().expect("lock").discover_calls, 1);
+        assert_eq!(selection.canonical_profile_path, store.profile_path());
+        assert!(store.scan_path().exists());
+        assert!(store.profile_path().exists());
+        assert!(store.status_path().exists());
+        assert!(config.prompts.discovery.exists());
+        assert!(config.schemas.workspace_profile.exists());
+        assert!(payload.profile_summary.is_some());
+        assert!(payload.status.last_refresh_error.is_none());
+        assert!(!payload.status.used_fallback_profile);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn refresh_workspace_profile_reuses_existing_profile_when_fingerprint_is_unchanged()
+    -> Result<()> {
+        let temp = tempdir()?;
+        let config = discovery_test_config(temp.path());
+        let workspace = discovery_test_workspace(temp.path())?;
+        let state = Arc::new(Mutex::new(FakeDiscoveryState::default()));
+        let worker = FakeDiscoveryWorker {
+            state: state.clone(),
+        };
+
+        let first = refresh_workspace_profile(&config, &worker, &workspace).await?;
+        let second = refresh_workspace_profile(&config, &worker, &workspace).await?;
+
+        assert_eq!(state.lock().expect("lock").discover_calls, 1);
+        assert_eq!(first.profile.summary, second.profile.summary);
+        assert_eq!(first.profile_fingerprint, second.profile_fingerprint);
+        assert!(!second.used_fallback_profile);
+        assert!(second.refresh_error.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn refresh_workspace_profile_refreshes_after_workspace_changes() -> Result<()> {
+        let temp = tempdir()?;
+        let config = discovery_test_config(temp.path());
+        let workspace = discovery_test_workspace(temp.path())?;
+        let state = Arc::new(Mutex::new(FakeDiscoveryState::default()));
+        let worker = FakeDiscoveryWorker {
+            state: state.clone(),
+        };
+
+        let first = refresh_workspace_profile(&config, &worker, &workspace).await?;
+        fs::write(
+            workspace.join("package.json"),
+            r#"{"name":"discovery-fixture","scripts":{"test":"vitest"},"dependencies":{"react":"18.3.0"}}"#,
+        )?;
+        let second = refresh_workspace_profile(&config, &worker, &workspace).await?;
+
+        assert_eq!(state.lock().expect("lock").discover_calls, 2);
+        assert_ne!(first.workspace_fingerprint, second.workspace_fingerprint);
+        assert_ne!(first.profile_fingerprint, second.profile_fingerprint);
+        assert!(second.profile.summary.contains("[refresh=2]"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn refresh_workspace_profile_falls_back_to_existing_profile_after_refresh_failure()
+    -> Result<()> {
+        let temp = tempdir()?;
+        let config = discovery_test_config(temp.path());
+        let workspace = discovery_test_workspace(temp.path())?;
+        let state = Arc::new(Mutex::new(FakeDiscoveryState::default()));
+        let worker = FakeDiscoveryWorker {
+            state: state.clone(),
+        };
+
+        let first = refresh_workspace_profile(&config, &worker, &workspace).await?;
+        fs::write(
+            workspace.join("Makefile"),
+            "test:\n\tcargo test\nbuild:\n\tcargo build\n",
+        )?;
+        state.lock().expect("lock").fail_message = Some("discovery worker failed".to_string());
+
+        let fallback = refresh_workspace_profile(&config, &worker, &workspace).await?;
+        let status = WorkspaceDiscoveryStore::new(&workspace)
+            .load_status()?
+            .expect("status");
+
+        assert_eq!(state.lock().expect("lock").discover_calls, 2);
+        assert!(fallback.used_fallback_profile);
+        assert_eq!(fallback.profile.summary, first.profile.summary);
+        assert_eq!(
+            fallback.refresh_error.as_deref(),
+            Some("discovery worker failed")
+        );
+        assert_eq!(
+            status.last_refresh_error.as_deref(),
+            Some("discovery worker failed")
+        );
+        assert!(status.used_fallback_profile);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn refresh_workspace_profile_blocks_when_no_profile_exists_and_refresh_fails()
+    -> Result<()> {
+        let temp = tempdir()?;
+        let config = discovery_test_config(temp.path());
+        let workspace = discovery_test_workspace(temp.path())?;
+        let state = Arc::new(Mutex::new(FakeDiscoveryState {
+            discover_calls: 0,
+            fail_message: Some("discovery worker failed".to_string()),
+        }));
+        let worker = FakeDiscoveryWorker {
+            state: state.clone(),
+        };
+
+        let err = refresh_workspace_profile(&config, &worker, &workspace)
+            .await
+            .expect_err("refresh should fail");
+        let store = WorkspaceDiscoveryStore::new(&workspace);
+        let status = store.load_status()?.expect("status");
+
+        assert_eq!(state.lock().expect("lock").discover_calls, 1);
+        assert!(store.load_profile()?.is_none());
+        assert_eq!(err.to_string(), "discovery worker failed");
+        assert_eq!(
+            status.last_refresh_error.as_deref(),
+            Some("discovery worker failed")
+        );
+        assert!(!status.used_fallback_profile);
+
+        Ok(())
+    }
+
+    fn discovery_test_config(project_root: &std::path::Path) -> ResolvedConfig {
+        let prompts_dir = project_root.join("prompts");
+        let schemas_dir = project_root.join("schemas");
+        fs::create_dir_all(&prompts_dir).expect("prompts dir");
+        fs::create_dir_all(&schemas_dir).expect("schemas dir");
+
+        ResolvedConfig {
+            project_root: project_root.to_path_buf(),
+            storage: ResolvedStorageConfig {
+                runs_dir: project_root.join(".loopsmith-runs"),
+            },
+            workspace: WorkspaceConfig {
+                isolation: WorkspaceIsolation::Direct,
+            },
+            worker: WorkerConfig {
+                selection: WorkerSelection::Simulated {
+                    simulation: loopsmith_core::config::SimulationWorkerConfig {
+                        evaluator_statuses: vec![QaStatus::Pass],
+                        session_prefix: "sim".to_string(),
+                    },
+                },
+                planner: None,
+            },
+            prompts: ResolvedPromptConfig {
+                discovery: prompts_dir.join("discovery.md"),
+                planner: prompts_dir.join("planner.md"),
+                builder: prompts_dir.join("builder.md"),
+                evaluator: prompts_dir.join("evaluator.md"),
+            },
+            schemas: ResolvedSchemaConfig {
+                workspace_profile: schemas_dir.join("workspace-profile.json"),
+                planner_output: schemas_dir.join("planner-output.json"),
+                builder_handoff: schemas_dir.join("builder-handoff.json"),
+                qa_report: schemas_dir.join("qa-report.json"),
+            },
+            runtime: RuntimeConfig {
+                feature_limit: 1,
+                max_repair_attempts: 1,
+                continue_after_failure: false,
+                supervision: RuntimeSupervisionConfig::default(),
+                services: Vec::new(),
+                stacks: Vec::new(),
+            },
+            evaluator: EvaluatorConfig {
+                dimensions: vec!["correctness".to_string()],
+                require_screenshots: false,
+                commands: vec![vec!["/usr/bin/env".to_string(), "true".to_string()]],
+                screenshots: Vec::new(),
+            },
+        }
+    }
+
+    fn discovery_test_workspace(project_root: &std::path::Path) -> Result<std::path::PathBuf> {
+        let workspace = project_root.join("workspace");
+        fs::create_dir_all(workspace.join("src"))?;
+        fs::write(
+            workspace.join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n[dependencies]\nserde = \"1\"\n",
+        )?;
+        fs::write(workspace.join("src/lib.rs"), "pub fn fixture() {}\n")?;
+        fs::write(
+            workspace.join(".editorconfig"),
+            "root = true\n[*]\nindent_style = space\n",
+        )?;
+        Ok(workspace)
     }
 }

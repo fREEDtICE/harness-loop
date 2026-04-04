@@ -8,6 +8,7 @@ use uuid::Uuid;
 use crate::{
     artifacts::{FeatureLayout, FileArtifactStore, RunLayout},
     config::ResolvedConfig,
+    discovery::{RunWorkspaceProfileSnapshot, WorkspaceProfile},
     domain::{
         ActiveRunStage, FeatureContract, FeatureLifecycleStatus, FeaturePhase, FeatureRunState,
         PlanDocument, PlanningRequest, PromptSnapshot, QaStatus, RunLaunchSnapshot,
@@ -70,6 +71,7 @@ where
         let now = Utc::now();
         let launch_snapshot = self.build_launch_snapshot(
             &request,
+            &layout.workspace_profile_file,
             now,
             effective_feature_limit,
             feature_limit_is_hard,
@@ -88,6 +90,10 @@ where
             &layout.evaluator_prompt_file,
             &launch_snapshot.prompts.evaluator,
         )?;
+        if let Some(profile) = request.workspace_profile.as_ref() {
+            self.artifacts
+                .write_json(&layout.workspace_profile_file, &profile.profile)?;
+        }
         let mut state = RunState {
             run_id,
             run_title: truncate_title(&request.user_request, 50),
@@ -251,7 +257,9 @@ where
             state.run_id,
             state.execution_workspace.clone(),
             layout.clone(),
+            load_workspace_profile_snapshot(&self.artifacts, layout).as_ref(),
         );
+        let workspace_profile = load_workspace_profile_snapshot(&self.artifacts, layout);
         let planning_request = PlanningRequest {
             user_request: user_request.to_string(),
             feature_limit,
@@ -307,7 +315,11 @@ where
         state.features.clear();
         for (index, feature) in plan.features.iter().enumerate() {
             let feature_layout = layout.feature_layout(index, &feature.id)?;
-            let contract = FeatureContract::from_feature(feature, &self.config.evaluator.commands);
+            let contract = FeatureContract::from_feature(
+                feature,
+                &self.config.evaluator.commands,
+                workspace_profile.as_ref(),
+            );
             self.artifacts
                 .write_json(&feature_layout.contract_file, &contract)?;
 
@@ -348,6 +360,7 @@ where
             state.run_id,
             state.execution_workspace.clone(),
             layout.clone(),
+            load_workspace_profile_snapshot(&self.artifacts, layout).as_ref(),
         );
 
         while state.current_feature_index < state.features.len() {
@@ -739,7 +752,10 @@ where
         run_id: Uuid,
         workspace: std::path::PathBuf,
         layout: RunLayout,
+        workspace_profile: Option<&WorkspaceProfile>,
     ) -> WorkerContext {
+        let workspace_profile_artifact =
+            workspace_profile.map(|_| layout.workspace_profile_file.clone());
         let planner_prompt = layout.planner_prompt_file.clone();
         let builder_prompt = layout.builder_prompt_file.clone();
         let evaluator_prompt = layout.evaluator_prompt_file.clone();
@@ -753,6 +769,8 @@ where
             planner_schema: self.config.schemas.planner_output.clone(),
             builder_schema: self.config.schemas.builder_handoff.clone(),
             qa_schema: self.config.schemas.qa_report.clone(),
+            workspace_profile_artifact,
+            workspace_profile_context: workspace_profile.map(WorkspaceProfile::prompt_context),
         }
     }
 
@@ -763,6 +781,7 @@ where
             root: run_root.to_path_buf(),
             inputs_dir: inputs_dir.clone(),
             prompt_inputs_dir: prompt_inputs_dir.clone(),
+            workspace_profile_file: inputs_dir.join("workspace-profile.json"),
             planner_prompt_file: prompt_inputs_dir.join("planner.md"),
             builder_prompt_file: prompt_inputs_dir.join("builder.md"),
             evaluator_prompt_file: prompt_inputs_dir.join("evaluator.md"),
@@ -780,6 +799,7 @@ where
     fn build_launch_snapshot(
         &self,
         request: &RunRequest,
+        workspace_profile_snapshot_path: &Path,
         launched_at: chrono::DateTime<Utc>,
         effective_feature_limit: usize,
         feature_limit_is_hard: bool,
@@ -828,6 +848,18 @@ where
             feature_limit_is_hard,
             user_request: request.user_request.clone(),
             prompts,
+            workspace_profile: request.workspace_profile.as_ref().map(|selection| {
+                RunWorkspaceProfileSnapshot {
+                    snapshot_path: workspace_profile_snapshot_path.to_path_buf(),
+                    canonical_profile_path: selection.canonical_profile_path.clone(),
+                    workspace_fingerprint: selection.workspace_fingerprint.clone(),
+                    profile_fingerprint: selection.profile_fingerprint.clone(),
+                    last_scanned_at: selection.last_scanned_at,
+                    last_refreshed_at: selection.last_refreshed_at,
+                    refresh_error: selection.refresh_error.clone(),
+                    used_fallback_profile: selection.used_fallback_profile,
+                }
+            }),
             launched_at,
         })
     }
@@ -991,6 +1023,17 @@ where
     }
 }
 
+fn load_workspace_profile_snapshot(
+    artifacts: &FileArtifactStore,
+    layout: &RunLayout,
+) -> Option<WorkspaceProfile> {
+    if !layout.workspace_profile_file.exists() {
+        return None;
+    }
+
+    artifacts.read_json(&layout.workspace_profile_file).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -1008,9 +1051,13 @@ mod tests {
     use crate::{
         artifacts::{FeatureLayout, FileArtifactStore, StageArtifactSet},
         config::{
-            CodexWorkerConfig, EvaluatorConfig, ResolvedConfig, ResolvedPromptConfig,
-            ResolvedSchemaConfig, ResolvedStorageConfig, RuntimeConfig, RuntimeSupervisionConfig,
-            ServiceConfig, SimulationWorkerConfig, WorkerConfig, WorkerSelection, WorkspaceConfig,
+            EvaluatorConfig, ResolvedConfig, ResolvedPromptConfig, ResolvedSchemaConfig,
+            ResolvedStorageConfig, RuntimeConfig, RuntimeSupervisionConfig, ServiceConfig,
+            SimulationWorkerConfig, WorkerConfig, WorkerSelection, WorkspaceConfig,
+        },
+        discovery::{
+            CommandCatalog, DiscoveryArtifactSet, DiscoveryFact, LayeringProfile,
+            WorkspaceDiscoveryRequest, WorkspaceProfile, WorkspaceProfileSelection,
         },
         domain::{
             ActiveRunStage, BuilderHandoff, EvaluationRequest, Feature, FeatureContract,
@@ -1018,7 +1065,7 @@ mod tests {
             RunLaunchSnapshot, RunLifecycleStatus, RunRequest, RunStageRecord, RunState,
             WorkerResult, WorkerStage, WorkerStatus,
         },
-        worker::{WorkerAdapter, WorkerContext},
+        worker::{DiscoveryContext, DiscoveryWorkerResult, WorkerAdapter, WorkerContext},
         workspace::WorkspaceIsolation,
     };
 
@@ -1036,6 +1083,26 @@ mod tests {
 
     #[async_trait]
     impl WorkerAdapter for FakeWorker {
+        async fn discover(
+            &self,
+            _context: &DiscoveryContext,
+            artifacts: &DiscoveryArtifactSet,
+            request: &WorkspaceDiscoveryRequest,
+        ) -> Result<DiscoveryWorkerResult> {
+            let profile = request.synthesize_profile();
+            fs::write(&artifacts.output_file, serde_json::to_vec_pretty(&profile)?)?;
+            Ok(DiscoveryWorkerResult {
+                status: WorkerStatus::Prepared,
+                command: vec!["fake".to_string(), "discover".to_string()],
+                prompt_file: artifacts.prompt_file.clone(),
+                output_file: artifacts.output_file.clone(),
+                stdout_log: artifacts.stdout_log.clone(),
+                stderr_log: artifacts.stderr_log.clone(),
+                notes: Vec::new(),
+                session_id: None,
+            })
+        }
+
         async fn plan(
             &self,
             _context: &WorkerContext,
@@ -1167,6 +1234,7 @@ mod tests {
                 feature_limit: Some(2),
                 selected_config: None,
                 prompt_overrides: Default::default(),
+                workspace_profile: None,
             })
             .await?;
         let observed = shared_state
@@ -1219,6 +1287,7 @@ mod tests {
                     builder: Some("builder override\n".to_string()),
                     evaluator: None,
                 },
+                workspace_profile: None,
             })
             .await?;
 
@@ -1269,6 +1338,7 @@ mod tests {
                 feature_limit: None,
                 selected_config: None,
                 prompt_overrides: Default::default(),
+                workspace_profile: None,
             })
             .await?;
 
@@ -1278,6 +1348,129 @@ mod tests {
         assert_eq!(launch.requested_feature_limit, None);
         assert_eq!(launch.effective_feature_limit, 2);
         assert!(!launch.feature_limit_is_hard);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn controller_snapshots_workspace_profile_and_applies_contract_notes() -> Result<()> {
+        let temp = tempdir()?;
+        let source_workspace = temp.path().join("workspace");
+        fs::create_dir_all(&source_workspace)?;
+
+        let config = resolved_config(temp.path(), temp.path().join(".loopsmith-runs"));
+        let artifacts = FileArtifactStore::new(config.storage.runs_dir.clone());
+        let worker = FakeWorker {
+            state: Arc::new(Mutex::new(FakeState::default())),
+        };
+        let controller = HarnessController::new(config, artifacts, worker);
+        let profile = WorkspaceProfile {
+            workspace_path: source_workspace.clone(),
+            generated_at: Utc::now(),
+            summary: "Workspace profile summary".to_string(),
+            key_concepts: vec!["Core loop with strict layering".to_string()],
+            tech_stack: Vec::new(),
+            repositories: Vec::new(),
+            dependency_relationships: Vec::new(),
+            api_contracts: vec![DiscoveryFact {
+                title: "HTTP route evidence in src/api.rs".to_string(),
+                summary: "Route signatures: router.get(\"/health\").".to_string(),
+                evidence: vec![PathBuf::from("src/api.rs")],
+            }],
+            layering: LayeringProfile {
+                summary: "Detected layers: ui, service, core.".to_string(),
+                layers: Vec::new(),
+                allowed_dependency_directions: vec![
+                    "UI and interface layers may depend inward on service and core layers, not the reverse."
+                        .to_string(),
+                ],
+                unresolved_ambiguities: Vec::new(),
+            },
+            user_journeys: Vec::new(),
+            e2e_test_cases: Vec::new(),
+            auth: Vec::new(),
+            coding_conventions: vec![DiscoveryFact {
+                title: ".editorconfig".to_string(),
+                summary: "root = true".to_string(),
+                evidence: vec![PathBuf::from(".editorconfig")],
+            }],
+            commands: CommandCatalog::default(),
+            risks: Vec::new(),
+        };
+        let profile_fingerprint = crate::discovery::profile_fingerprint(&profile)?;
+
+        let state = controller
+            .start_run(RunRequest {
+                user_request: "Build a harness".to_string(),
+                source_workspace,
+                feature_limit: Some(1),
+                selected_config: None,
+                prompt_overrides: Default::default(),
+                workspace_profile: Some(WorkspaceProfileSelection {
+                    profile: profile.clone(),
+                    canonical_profile_path: temp
+                        .path()
+                        .join("workspace/.loopsmith/discovery/profile.json"),
+                    scan_path: temp.path().join("workspace/.loopsmith/discovery/scan.json"),
+                    status_path: temp
+                        .path()
+                        .join("workspace/.loopsmith/discovery/status.json"),
+                    workspace_fingerprint: "workspace-fingerprint".to_string(),
+                    profile_fingerprint: profile_fingerprint.clone(),
+                    last_scanned_at: profile.generated_at,
+                    last_refreshed_at: profile.generated_at,
+                    refresh_error: None,
+                    used_fallback_profile: false,
+                }),
+            })
+            .await?;
+
+        let launch_file = state.launch_file.clone().expect("launch file");
+        let launch: RunLaunchSnapshot =
+            serde_json::from_slice(&fs::read(&launch_file).context("read launch")?)?;
+        let snapshot_path = state.run_root.join("inputs/workspace-profile.json");
+        let snapped_profile: WorkspaceProfile = serde_json::from_slice(&fs::read(&snapshot_path)?)?;
+        let contract: FeatureContract = serde_json::from_slice(&fs::read(
+            state
+                .run_root
+                .join("features/01-feature-001/feature-contract.json"),
+        )?)?;
+
+        assert_eq!(snapped_profile.summary, profile.summary);
+        assert_eq!(
+            launch
+                .workspace_profile
+                .as_ref()
+                .expect("workspace profile snapshot")
+                .snapshot_path,
+            snapshot_path
+        );
+        assert_eq!(
+            launch
+                .workspace_profile
+                .as_ref()
+                .expect("workspace profile snapshot")
+                .profile_fingerprint,
+            profile_fingerprint
+        );
+        assert!(
+            contract
+                .scope_notes
+                .iter()
+                .any(|note| note.contains("Respect workspace layering"))
+        );
+        assert!(
+            contract
+                .scope_notes
+                .iter()
+                .any(|note| note.contains("Preserve detected API contracts"))
+        );
+        assert!(
+            contract
+                .scope_notes
+                .iter()
+                .any(|note| note.contains("Follow detected coding conventions"))
+        );
 
         Ok(())
     }
@@ -1358,9 +1551,11 @@ mod tests {
         let schemas = project_root.join("schemas");
         let _ = fs::create_dir_all(&prompts);
         let _ = fs::create_dir_all(&schemas);
+        let _ = fs::write(prompts.join("discovery.md"), "discovery prompt\n");
         let _ = fs::write(prompts.join("planner.md"), "planner prompt\n");
         let _ = fs::write(prompts.join("builder.md"), "builder prompt\n");
         let _ = fs::write(prompts.join("evaluator.md"), "evaluator prompt\n");
+        let _ = fs::write(schemas.join("workspace-profile.json"), "{}\n");
         let _ = fs::write(schemas.join("planner-output.json"), "{}\n");
         let _ = fs::write(schemas.join("builder-handoff.json"), "{}\n");
         let _ = fs::write(schemas.join("qa-report.json"), "{}\n");
@@ -1381,11 +1576,13 @@ mod tests {
                 planner: None,
             },
             prompts: ResolvedPromptConfig {
+                discovery: prompts.join("discovery.md"),
                 planner: prompts.join("planner.md"),
                 builder: prompts.join("builder.md"),
                 evaluator: prompts.join("evaluator.md"),
             },
             schemas: ResolvedSchemaConfig {
+                workspace_profile: schemas.join("workspace-profile.json"),
                 planner_output: schemas.join("planner-output.json"),
                 builder_handoff: schemas.join("builder-handoff.json"),
                 qa_report: schemas.join("qa-report.json"),

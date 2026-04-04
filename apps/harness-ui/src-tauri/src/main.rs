@@ -2,6 +2,7 @@ use std::{path::PathBuf, sync::Mutex};
 
 use chrono::Utc;
 use loopsmith_core::{
+    discovery::WorkspaceDiscoveryPayload,
     domain::{PromptOverrides, PromptSnapshot, RunState},
     home,
     paths::normalize_path,
@@ -33,6 +34,7 @@ struct WorkspacePayload {
     record: WorkspaceRecord,
     config_path: String,
     prompts: Option<PromptBundle>,
+    discovery: Option<WorkspaceDiscoveryPayload>,
     runs: Vec<WorkspaceRunSummary>,
     current_run: Option<RunState>,
     config_error: Option<String>,
@@ -120,6 +122,10 @@ fn load_workspace(
     }
 
     let mut prompts = None;
+    let discovery = state
+        .service
+        .load_discovery_payload(&workspace_path)
+        .map_err(render_error)?;
     let mut runs = Vec::new();
     let mut current_run = None;
     let mut config_error = None;
@@ -164,6 +170,7 @@ fn load_workspace(
         record,
         config_path: config_path.display().to_string(),
         prompts,
+        discovery,
         runs,
         current_run,
         config_error,

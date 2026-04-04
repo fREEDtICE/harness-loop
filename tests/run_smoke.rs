@@ -6,6 +6,10 @@ use std::{
     time::Duration,
 };
 
+use loopsmith_core::discovery::{
+    WorkspaceDiscoveryRequest, WorkspaceDiscoveryStatus, WorkspaceDiscoveryStore,
+    profile_fingerprint, scan_workspace,
+};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -1900,6 +1904,15 @@ commands = [
             )?;
         }
 
+        if uses_fake_codex_worker(&options.worker_mode)
+            || options
+                .planner_worker_mode
+                .as_ref()
+                .is_some_and(uses_fake_codex_worker)
+        {
+            seed_cached_workspace_profile(&workspace_dir)?;
+        }
+
         let request_file = project_root.join("request.md");
 
         Ok(Self {
@@ -2365,6 +2378,37 @@ fn run_ok(command: &mut Command, label: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn uses_fake_codex_worker(worker_mode: &WorkerMode<'_>) -> bool {
+    matches!(worker_mode, WorkerMode::CodexCliFake { .. })
+}
+
+fn seed_cached_workspace_profile(workspace_dir: &Path) -> Result<(), Box<dyn Error>> {
+    let store = WorkspaceDiscoveryStore::new(workspace_dir);
+    let scan = scan_workspace(workspace_dir)?;
+    let profile = WorkspaceDiscoveryRequest {
+        scan: scan.clone(),
+        previous_profile: None,
+    }
+    .synthesize_profile();
+    let profile_fingerprint = profile_fingerprint(&profile)?;
+
+    store.save_scan(&scan)?;
+    store.save_profile(&profile)?;
+    store.save_status(&WorkspaceDiscoveryStatus {
+        workspace_path: workspace_dir.to_path_buf(),
+        scan_path: store.scan_path(),
+        profile_path: store.profile_path(),
+        workspace_fingerprint: scan.workspace_fingerprint,
+        profile_fingerprint: Some(profile_fingerprint),
+        last_scanned_at: scan.scanned_at,
+        last_refreshed_at: Some(profile.generated_at),
+        last_refresh_error: None,
+        used_fallback_profile: false,
+    })?;
+
+    Ok(())
+}
+
 #[derive(Clone, Debug)]
 struct FakeCodexScenario {
     routes: Vec<FakeCodexRoute>,
@@ -2459,6 +2503,12 @@ fn write_fake_codex_script(
     let mut script = String::from(
         "#!/bin/sh\nset -eu\nOUTPUT=\"\"\nPREV=\"\"\nfor ARG in \"$@\"; do\n  if [ \"$PREV\" = \"o\" ]; then\n    OUTPUT=\"$ARG\"\n    PREV=\"\"\n    continue\n  fi\n  if [ \"$ARG\" = \"-o\" ]; then\n    PREV=\"o\"\n  fi\ndone\ncat >/dev/null\ncase \"$OUTPUT\" in\n",
     );
+
+    script.push_str(
+        "  */.loopsmith/discovery/worker/workspace-profile.json)\n    cat >\"$OUTPUT\" <<'__CODEX_JSON__'\n",
+    );
+    script.push_str(&workspace_profile_json());
+    script.push_str("\n__CODEX_JSON__\n    ;;\n");
 
     for route in &scenario.routes {
         script.push_str(&format!("  {}\n", route.output_pattern));
@@ -2751,6 +2801,36 @@ fn qa_report_json(status: &str, summary: &str) -> String {
         "findings": [],
         "next_actions": [],
         "checks": [],
+    })
+    .to_string()
+}
+
+fn workspace_profile_json() -> String {
+    json!({
+        "workspace_path": ".",
+        "generated_at": "2026-04-04T00:00:00Z",
+        "summary": "Fake codex discovery profile",
+        "key_concepts": ["Pre-run discovery context"],
+        "tech_stack": [],
+        "repositories": [],
+        "dependency_relationships": [],
+        "api_contracts": [],
+        "layering": {
+            "summary": "No strong layer names were detected from file layout alone.",
+            "layers": [],
+            "allowed_dependency_directions": [],
+            "unresolved_ambiguities": [],
+        },
+        "user_journeys": [],
+        "e2e_test_cases": [],
+        "auth": [],
+        "coding_conventions": [],
+        "commands": {
+            "build": [],
+            "test": [],
+            "dev": [],
+        },
+        "risks": [],
     })
     .to_string()
 }

@@ -5,12 +5,15 @@ use async_trait::async_trait;
 use loopsmith_core::{
     artifacts::{FeatureLayout, StageArtifactSet},
     config::ClaudeWorkerConfig,
+    discovery::{DiscoveryArtifactSet, WorkspaceDiscoveryRequest},
     domain::{
-        BuilderHandoff, EvaluationRequest, PlanningRequest, QaReport, WorkerResult, WorkerStage,
-        WorkerStatus,
+        BuilderHandoff, EvaluationRequest, PlanningRequest, QaReport, WorkerResult, WorkerStatus,
     },
     shell_env::wrap_command_for_user_shell,
-    worker::{WorkerAdapter, WorkerContext, render_worker_prompt},
+    worker::{
+        DiscoveryContext, DiscoveryWorkerResult, WorkerAdapter, WorkerContext,
+        render_discovery_prompt, render_worker_prompt,
+    },
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -28,6 +31,54 @@ impl ClaudeCliWorker {
         Self { config }
     }
 
+    async fn run_discovery_stage(
+        &self,
+        context: &DiscoveryContext,
+        artifacts: &DiscoveryArtifactSet,
+        request: &WorkspaceDiscoveryRequest,
+    ) -> Result<DiscoveryWorkerResult> {
+        let prompt = render_discovery_prompt(context, &context.workspace_profile_schema, request)?;
+        fs::write(&artifacts.prompt_file, &prompt)
+            .with_context(|| format!("failed to write {}", artifacts.prompt_file.display()))?;
+
+        let schema_content =
+            fs::read_to_string(&context.workspace_profile_schema).with_context(|| {
+                format!(
+                    "failed to read schema {}",
+                    context.workspace_profile_schema.display()
+                )
+            })?;
+        let command = self.exec_command_for_workspace(&context.workspace, &schema_content);
+        let (session_id, json_output) = self
+            .execute_command(
+                &artifacts.prompt_file,
+                &artifacts.output_file,
+                &artifacts.stdout_log,
+                &artifacts.stderr_log,
+                command.clone(),
+                &prompt,
+                "discover",
+                1,
+            )
+            .await?;
+
+        if let Some(json_bytes) = json_output {
+            fs::write(&artifacts.output_file, &json_bytes)
+                .with_context(|| format!("failed to write {}", artifacts.output_file.display()))?;
+        }
+
+        Ok(DiscoveryWorkerResult {
+            status: WorkerStatus::Executed,
+            command,
+            prompt_file: artifacts.prompt_file.clone(),
+            output_file: artifacts.output_file.clone(),
+            stdout_log: artifacts.stdout_log.clone(),
+            stderr_log: artifacts.stderr_log.clone(),
+            notes: vec!["Execution completed.".to_string()],
+            session_id,
+        })
+    }
+
     async fn run_exec_stage<T: Serialize>(
         &self,
         context: &WorkerContext,
@@ -40,7 +91,7 @@ impl ClaudeCliWorker {
         let prompt = render_worker_prompt(
             context,
             feature,
-            artifacts.stage,
+            artifacts.stage.as_str(),
             template_path,
             schema_path,
             payload,
@@ -50,9 +101,36 @@ impl ClaudeCliWorker {
 
         let schema_content = fs::read_to_string(schema_path)
             .with_context(|| format!("failed to read schema {}", schema_path.display()))?;
-        let command = self.exec_command_for_stage(context, &schema_content);
-        self.execute_command(artifacts, command, &prompt, artifacts.stage)
-            .await
+        let command = self.exec_command_for_workspace(&context.workspace, &schema_content);
+        let (session_id, json_output) = self
+            .execute_command(
+                &artifacts.prompt_file,
+                &artifacts.output_file,
+                &artifacts.stdout_log,
+                &artifacts.stderr_log,
+                command.clone(),
+                &prompt,
+                artifacts.stage.as_str(),
+                artifacts.attempt,
+            )
+            .await?;
+
+        if let Some(json_bytes) = json_output {
+            fs::write(&artifacts.output_file, &json_bytes)
+                .with_context(|| format!("failed to write {}", artifacts.output_file.display()))?;
+        }
+
+        Ok(WorkerResult {
+            stage: artifacts.stage,
+            status: WorkerStatus::Executed,
+            command,
+            prompt_file: artifacts.prompt_file.clone(),
+            output_file: artifacts.output_file.clone(),
+            stdout_log: artifacts.stdout_log.clone(),
+            stderr_log: artifacts.stderr_log.clone(),
+            notes: vec!["Execution completed.".to_string()],
+            session_id,
+        })
     }
 
     async fn run_repair_stage<T: Serialize>(
@@ -68,7 +146,7 @@ impl ClaudeCliWorker {
         let prompt = render_worker_prompt(
             context,
             Some(feature),
-            artifacts.stage,
+            artifacts.stage.as_str(),
             template_path,
             schema_path,
             payload,
@@ -85,40 +163,96 @@ impl ClaudeCliWorker {
                 "resuming claude worker stage from prior session"
             );
             let command = self.resume_command_for_stage(session_id);
-            let mut result = self
-                .execute_command(artifacts, command, &prompt, artifacts.stage)
+            let (mut returned_session, json_output) = self
+                .execute_command(
+                    &artifacts.prompt_file,
+                    &artifacts.output_file,
+                    &artifacts.stdout_log,
+                    &artifacts.stderr_log,
+                    command.clone(),
+                    &prompt,
+                    artifacts.stage.as_str(),
+                    artifacts.attempt,
+                )
                 .await?;
 
-            if result.session_id.is_none() {
-                result.session_id = Some(session_id.to_string());
+            if returned_session.is_none() {
+                returned_session = Some(session_id.to_string());
             }
 
-            return Ok(result);
+            if let Some(json_bytes) = json_output {
+                fs::write(&artifacts.output_file, &json_bytes).with_context(|| {
+                    format!("failed to write {}", artifacts.output_file.display())
+                })?;
+            }
+
+            return Ok(WorkerResult {
+                stage: artifacts.stage,
+                status: WorkerStatus::Executed,
+                command,
+                prompt_file: artifacts.prompt_file.clone(),
+                output_file: artifacts.output_file.clone(),
+                stdout_log: artifacts.stdout_log.clone(),
+                stderr_log: artifacts.stderr_log.clone(),
+                notes: vec!["Execution completed.".to_string()],
+                session_id: returned_session,
+            });
         }
 
         let schema_content = fs::read_to_string(schema_path)
             .with_context(|| format!("failed to read schema {}", schema_path.display()))?;
-        let command = self.exec_command_for_stage(context, &schema_content);
-        self.execute_command(artifacts, command, &prompt, artifacts.stage)
-            .await
+        let command = self.exec_command_for_workspace(&context.workspace, &schema_content);
+        let (session_id, json_output) = self
+            .execute_command(
+                &artifacts.prompt_file,
+                &artifacts.output_file,
+                &artifacts.stdout_log,
+                &artifacts.stderr_log,
+                command.clone(),
+                &prompt,
+                artifacts.stage.as_str(),
+                artifacts.attempt,
+            )
+            .await?;
+
+        if let Some(json_bytes) = json_output {
+            fs::write(&artifacts.output_file, &json_bytes)
+                .with_context(|| format!("failed to write {}", artifacts.output_file.display()))?;
+        }
+
+        Ok(WorkerResult {
+            stage: artifacts.stage,
+            status: WorkerStatus::Executed,
+            command,
+            prompt_file: artifacts.prompt_file.clone(),
+            output_file: artifacts.output_file.clone(),
+            stdout_log: artifacts.stdout_log.clone(),
+            stderr_log: artifacts.stderr_log.clone(),
+            notes: vec!["Execution completed.".to_string()],
+            session_id,
+        })
     }
 
     async fn execute_command(
         &self,
-        artifacts: &StageArtifactSet,
+        prompt_file: &Path,
+        output_file: &Path,
+        stdout_log: &Path,
+        stderr_log: &Path,
         command: Vec<String>,
         prompt: &str,
-        stage: WorkerStage,
-    ) -> Result<WorkerResult> {
+        stage_label: &str,
+        attempt: usize,
+    ) -> Result<(Option<String>, Option<Vec<u8>>)> {
         let rendered_command = render_command(&command);
         info!(
-            stage = stage.as_str(),
-            attempt = artifacts.attempt,
+            stage = stage_label,
+            attempt,
             command = %rendered_command,
-            prompt_file = %artifacts.prompt_file.display(),
-            output_file = %artifacts.output_file.display(),
-            stdout_log = %artifacts.stdout_log.display(),
-            stderr_log = %artifacts.stderr_log.display(),
+            prompt_file = %prompt_file.display(),
+            output_file = %output_file.display(),
+            stdout_log = %stdout_log.display(),
+            stderr_log = %stderr_log.display(),
             "starting claude worker stage"
         );
 
@@ -159,8 +293,8 @@ impl ClaudeCliWorker {
             .take()
             .context("failed to capture claude stderr")?;
 
-        let stdout_log_path = artifacts.stdout_log.clone();
-        let stderr_log_path = artifacts.stderr_log.clone();
+        let stdout_log_path = stdout_log.to_path_buf();
+        let stderr_log_path = stderr_log.to_path_buf();
 
         let stdout_handle: tokio::task::JoinHandle<Result<Vec<u8>>> =
             tokio::spawn(async move { tee_stream_to_file(child_stdout, &stdout_log_path).await });
@@ -185,25 +319,24 @@ impl ClaudeCliWorker {
             Ok(status) => status,
             Err(error) => {
                 #[cfg(unix)]
-                log_cleanup_result(stage, artifacts.attempt, child_pid, &cleanup_result);
+                log_cleanup_result(stage_label, attempt, child_pid, &cleanup_result);
 
                 return Err(error).with_context(|| {
                     format!(
                         "failed while waiting for {} stage {}",
-                        self.config.binary,
-                        stage.as_str()
+                        self.config.binary, stage_label
                     )
                 });
             }
         };
 
         #[cfg(unix)]
-        log_cleanup_result(stage, artifacts.attempt, child_pid, &cleanup_result);
+        log_cleanup_result(stage_label, attempt, child_pid, &cleanup_result);
 
         let (session_id, json_output) = extract_session_and_output(&stdout_bytes);
         info!(
-            stage = stage.as_str(),
-            attempt = artifacts.attempt,
+            stage = stage_label,
+            attempt,
             status = %status,
             session_id = session_id.as_deref().unwrap_or("-"),
             "completed claude worker stage"
@@ -213,10 +346,13 @@ impl ClaudeCliWorker {
             anyhow::bail!(
                 "{}",
                 format_stage_failure(
-                    stage,
+                    stage_label,
                     &status,
                     &command,
-                    artifacts,
+                    prompt_file,
+                    output_file,
+                    stdout_log,
+                    stderr_log,
                     &stdout_bytes,
                     &stderr_bytes,
                     session_id.as_deref(),
@@ -224,25 +360,10 @@ impl ClaudeCliWorker {
             );
         }
 
-        if let Some(json_bytes) = json_output {
-            fs::write(&artifacts.output_file, &json_bytes)
-                .with_context(|| format!("failed to write {}", artifacts.output_file.display()))?;
-        }
-
-        Ok(WorkerResult {
-            stage,
-            status: WorkerStatus::Executed,
-            command,
-            prompt_file: artifacts.prompt_file.clone(),
-            output_file: artifacts.output_file.clone(),
-            stdout_log: artifacts.stdout_log.clone(),
-            stderr_log: artifacts.stderr_log.clone(),
-            notes: vec!["Execution completed.".to_string()],
-            session_id,
-        })
+        Ok((session_id, json_output))
     }
 
-    fn exec_command_for_stage(&self, context: &WorkerContext, schema_content: &str) -> Vec<String> {
+    fn exec_command_for_workspace(&self, workspace: &Path, schema_content: &str) -> Vec<String> {
         let mut command = vec![
             self.config.binary.clone(),
             "-p".to_string(),
@@ -259,7 +380,7 @@ impl ClaudeCliWorker {
             "--model".to_string(),
             self.config.model.clone(),
             "-C".to_string(),
-            context.workspace.display().to_string(),
+            workspace.display().to_string(),
             "--json-schema".to_string(),
             schema_content.to_string(),
         ]);
@@ -381,21 +502,21 @@ fn send_signal(pid: u32, signal: libc::c_int) -> Result<()> {
 
 #[cfg(unix)]
 fn log_cleanup_result(
-    stage: WorkerStage,
+    stage_label: &str,
     attempt: usize,
     pid: Option<u32>,
     cleanup_result: &Result<bool>,
 ) {
     match cleanup_result {
         Ok(true) => info!(
-            stage = stage.as_str(),
+            stage = stage_label,
             attempt,
             pid = pid.unwrap_or_default(),
             "cleaned up lingering claude worker descendant processes"
         ),
         Ok(false) => {}
         Err(error) => warn!(
-            stage = stage.as_str(),
+            stage = stage_label,
             attempt,
             pid = pid.unwrap_or_default(),
             error = %error,
@@ -406,6 +527,15 @@ fn log_cleanup_result(
 
 #[async_trait]
 impl WorkerAdapter for ClaudeCliWorker {
+    async fn discover(
+        &self,
+        context: &DiscoveryContext,
+        artifacts: &DiscoveryArtifactSet,
+        request: &WorkspaceDiscoveryRequest,
+    ) -> Result<DiscoveryWorkerResult> {
+        self.run_discovery_stage(context, artifacts, request).await
+    }
+
     async fn plan(
         &self,
         context: &WorkerContext,
@@ -525,19 +655,18 @@ fn extract_session_and_output(stdout: &[u8]) -> (Option<String>, Option<Vec<u8>>
 }
 
 fn format_stage_failure(
-    stage: WorkerStage,
+    stage_label: &str,
     status: &std::process::ExitStatus,
     command: &[String],
-    artifacts: &StageArtifactSet,
+    prompt_file: &Path,
+    output_file: &Path,
+    stdout_log: &Path,
+    stderr_log: &Path,
     stdout: &[u8],
     stderr: &[u8],
     session_id: Option<&str>,
 ) -> String {
-    let mut message = format!(
-        "claude stage {} failed with status {}",
-        stage.as_str(),
-        status
-    );
+    let mut message = format!("claude stage {} failed with status {}", stage_label, status);
     let _ = write!(
         message,
         "\ncommand: {}\
@@ -546,10 +675,10 @@ fn format_stage_failure(
 \nstdout_log: {}\
 \nstderr_log: {}",
         render_command(command),
-        artifacts.prompt_file.display(),
-        artifacts.output_file.display(),
-        artifacts.stdout_log.display(),
-        artifacts.stderr_log.display(),
+        prompt_file.display(),
+        output_file.display(),
+        stdout_log.display(),
+        stderr_log.display(),
     );
 
     if let Some(session_id) = session_id {

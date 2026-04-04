@@ -19,6 +19,7 @@ pub struct RunLayout {
     pub root: PathBuf,
     pub inputs_dir: PathBuf,
     pub prompt_inputs_dir: PathBuf,
+    pub workspace_profile_file: PathBuf,
     pub planner_prompt_file: PathBuf,
     pub builder_prompt_file: PathBuf,
     pub evaluator_prompt_file: PathBuf,
@@ -99,6 +100,7 @@ impl FileArtifactStore {
         Ok(RunLayout {
             inputs_dir: inputs_dir.clone(),
             prompt_inputs_dir: prompt_inputs_dir.clone(),
+            workspace_profile_file: inputs_dir.join("workspace-profile.json"),
             planner_prompt_file: prompt_inputs_dir.join("planner.md"),
             builder_prompt_file: prompt_inputs_dir.join("builder.md"),
             evaluator_prompt_file: prompt_inputs_dir.join("evaluator.md"),

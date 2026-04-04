@@ -28,11 +28,13 @@ resume_sessions = true
 # session_prefix = "planner-simulated"
 
 [prompts]
+discovery = "prompts/discovery.md"
 planner = "prompts/planner.md"
 builder = "prompts/builder.md"
 evaluator = "prompts/evaluator.md"
 
 [schemas]
+workspace_profile = "schemas/workspace-profile.json"
 planner_output = "schemas/planner-output.json"
 builder_handoff = "schemas/builder-handoff.json"
 qa_report = "schemas/qa-report.json"

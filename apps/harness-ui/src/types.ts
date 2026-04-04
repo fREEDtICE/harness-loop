@@ -91,10 +91,28 @@ export type PromptBundle = {
   effective: PromptSnapshot;
 };
 
+export type WorkspaceDiscoveryStatus = {
+  workspace_path: string;
+  scan_path: string;
+  profile_path: string;
+  workspace_fingerprint: string;
+  profile_fingerprint: string | null;
+  last_scanned_at: string;
+  last_refreshed_at: string | null;
+  last_refresh_error: string | null;
+  used_fallback_profile: boolean;
+};
+
+export type WorkspaceDiscoveryPayload = {
+  status: WorkspaceDiscoveryStatus;
+  profile_summary: string | null;
+};
+
 export type WorkspacePayload = {
   record: WorkspaceRecord;
   config_path: string;
   prompts: PromptBundle | null;
+  discovery: WorkspaceDiscoveryPayload | null;
   runs: WorkspaceRunSummary[];
   current_run: RunState | null;
   config_error: string | null;

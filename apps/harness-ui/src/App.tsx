@@ -160,6 +160,7 @@ export default function App() {
             && JSON.stringify(current.runs) === JSON.stringify(next.runs)
             && JSON.stringify(current.current_run) === JSON.stringify(next.current_run)
             && JSON.stringify(current.prompts) === JSON.stringify(next.prompts)
+            && JSON.stringify(current.discovery) === JSON.stringify(next.discovery)
             && current.config_error === next.config_error) {
             return current;
           }
@@ -478,6 +479,7 @@ export default function App() {
       {showProjectSettings && selectedWorkspacePath ? (
         <ProjectSettingsPanel
           workspacePath={selectedWorkspacePath}
+          discovery={workspace.discovery}
           onClose={() => setShowProjectSettings(false)}
           onError={setErrorMessage}
         />

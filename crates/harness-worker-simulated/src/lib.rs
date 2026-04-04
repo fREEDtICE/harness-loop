@@ -5,11 +5,15 @@ use async_trait::async_trait;
 use loopsmith_core::{
     artifacts::{FeatureLayout, StageArtifactSet},
     config::SimulationWorkerConfig,
+    discovery::{DiscoveryArtifactSet, WorkspaceDiscoveryRequest},
     domain::{
         BuilderHandoff, EvaluationRequest, PlanningRequest, QaCheck, QaReport, QaStatus,
         WorkerResult, WorkerStatus,
     },
-    worker::{WorkerAdapter, WorkerContext, render_worker_prompt},
+    worker::{
+        DiscoveryContext, DiscoveryWorkerResult, WorkerAdapter, WorkerContext,
+        render_discovery_prompt, render_worker_prompt,
+    },
 };
 use serde::Serialize;
 
@@ -56,6 +60,34 @@ impl SimulatedWorker {
         })
     }
 
+    fn write_discovery_result(
+        &self,
+        artifacts: &DiscoveryArtifactSet,
+        command: Vec<String>,
+        prompt: String,
+        output_json: String,
+    ) -> Result<DiscoveryWorkerResult> {
+        fs::write(&artifacts.prompt_file, prompt)
+            .with_context(|| format!("failed to write {}", artifacts.prompt_file.display()))?;
+        fs::write(&artifacts.stdout_log, "simulated\n")
+            .with_context(|| format!("failed to write {}", artifacts.stdout_log.display()))?;
+        fs::write(&artifacts.stderr_log, "")
+            .with_context(|| format!("failed to write {}", artifacts.stderr_log.display()))?;
+        fs::write(&artifacts.output_file, output_json)
+            .with_context(|| format!("failed to write {}", artifacts.output_file.display()))?;
+
+        Ok(DiscoveryWorkerResult {
+            status: WorkerStatus::Prepared,
+            command,
+            prompt_file: artifacts.prompt_file.clone(),
+            output_file: artifacts.output_file.clone(),
+            stdout_log: artifacts.stdout_log.clone(),
+            stderr_log: artifacts.stderr_log.clone(),
+            notes: vec!["Simulated discovery worker emitted deterministic artifacts.".to_string()],
+            session_id: Some(format!("{}-discover-01", self.config.session_prefix)),
+        })
+    }
+
     fn evaluation_status(&self, attempt: usize) -> QaStatus {
         self.config
             .evaluator_statuses
@@ -68,6 +100,23 @@ impl SimulatedWorker {
 
 #[async_trait]
 impl WorkerAdapter for SimulatedWorker {
+    async fn discover(
+        &self,
+        context: &DiscoveryContext,
+        artifacts: &DiscoveryArtifactSet,
+        request: &WorkspaceDiscoveryRequest,
+    ) -> Result<DiscoveryWorkerResult> {
+        let prompt = render_discovery_prompt(context, &context.workspace_profile_schema, request)?;
+        let output = serde_json::to_string_pretty(&request.synthesize_profile())
+            .context("failed to serialize simulated workspace profile")?;
+        self.write_discovery_result(
+            artifacts,
+            vec!["simulated".to_string(), "discover".to_string()],
+            prompt,
+            output,
+        )
+    }
+
     async fn plan(
         &self,
         context: &WorkerContext,
@@ -77,7 +126,7 @@ impl WorkerAdapter for SimulatedWorker {
         let prompt = render_worker_prompt(
             context,
             None,
-            artifacts.stage,
+            artifacts.stage.as_str(),
             &context.planner_prompt,
             &context.planner_schema,
             request,
@@ -102,7 +151,7 @@ impl WorkerAdapter for SimulatedWorker {
         let prompt = render_worker_prompt(
             context,
             Some(feature),
-            artifacts.stage,
+            artifacts.stage.as_str(),
             &context.builder_prompt,
             &context.builder_schema,
             contract,
@@ -135,7 +184,7 @@ impl WorkerAdapter for SimulatedWorker {
         let prompt = render_worker_prompt(
             context,
             Some(feature),
-            artifacts.stage,
+            artifacts.stage.as_str(),
             &context.evaluator_prompt,
             &context.qa_schema,
             request,
@@ -200,7 +249,7 @@ impl WorkerAdapter for SimulatedWorker {
         let prompt = render_worker_prompt(
             context,
             Some(feature),
-            artifacts.stage,
+            artifacts.stage.as_str(),
             &context.builder_prompt,
             &context.builder_schema,
             &payload,

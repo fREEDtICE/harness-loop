@@ -9,10 +9,12 @@ use tracing::info;
 const LOOPSMITH_DIR: &str = ".loopsmith";
 
 const TEMPLATE_CONFIG: &str = include_str!("../../../config/example.toml");
+const TEMPLATE_DISCOVERY: &str = include_str!("../../../prompts/discovery.md");
 const TEMPLATE_PLANNER: &str = include_str!("../../../prompts/planner.md");
 const TEMPLATE_BUILDER: &str = include_str!("../../../prompts/builder.md");
 const TEMPLATE_EVALUATOR: &str = include_str!("../../../prompts/evaluator.md");
 
+const SCHEMA_WORKSPACE_PROFILE: &str = include_str!("../../../schemas/workspace-profile.json");
 const SCHEMA_PLANNER_OUTPUT: &str = include_str!("../../../schemas/planner-output.json");
 const SCHEMA_BUILDER_HANDOFF: &str = include_str!("../../../schemas/builder-handoff.json");
 const SCHEMA_QA_REPORT: &str = include_str!("../../../schemas/qa-report.json");
@@ -43,6 +45,10 @@ const GLOBAL_TEMPLATES: &[TemplateFile] = &[
         content: TemplateContent::PlatformAdaptive(platform_config_template),
     },
     TemplateFile {
+        relative_path: "prompts/discovery.md",
+        content: TemplateContent::Static(TEMPLATE_DISCOVERY),
+    },
+    TemplateFile {
         relative_path: "prompts/planner.md",
         content: TemplateContent::Static(TEMPLATE_PLANNER),
     },
@@ -53,6 +59,10 @@ const GLOBAL_TEMPLATES: &[TemplateFile] = &[
     TemplateFile {
         relative_path: "prompts/evaluator.md",
         content: TemplateContent::Static(TEMPLATE_EVALUATOR),
+    },
+    TemplateFile {
+        relative_path: "schemas/workspace-profile.json",
+        content: TemplateContent::Static(SCHEMA_WORKSPACE_PROFILE),
     },
     TemplateFile {
         relative_path: "schemas/planner-output.json",
@@ -195,9 +205,11 @@ pub fn ensure_workspace_config(workspace_path: &Path) -> Result<PathBuf> {
 /// Writes any missing template files (prompts, schemas) into an existing workspace .loopsmith/ dir.
 fn ensure_workspace_templates(ws_dir: &Path) -> Result<()> {
     let expected: &[(&str, &str)] = &[
+        ("prompts/discovery.md", TEMPLATE_DISCOVERY),
         ("prompts/planner.md", TEMPLATE_PLANNER),
         ("prompts/builder.md", TEMPLATE_BUILDER),
         ("prompts/evaluator.md", TEMPLATE_EVALUATOR),
+        ("schemas/workspace-profile.json", SCHEMA_WORKSPACE_PROFILE),
         ("schemas/planner-output.json", SCHEMA_PLANNER_OUTPUT),
         ("schemas/builder-handoff.json", SCHEMA_BUILDER_HANDOFF),
         ("schemas/qa-report.json", SCHEMA_QA_REPORT),
@@ -244,13 +256,14 @@ fn copy_global_to_workspace(global_home: &Path, ws_dir: &Path) -> Result<()> {
     copy_dir_contents(
         &global_home.join("prompts"),
         &ws_dir.join("prompts"),
-        &["planner.md", "builder.md", "evaluator.md"],
+        &["discovery.md", "planner.md", "builder.md", "evaluator.md"],
     )?;
 
     copy_dir_contents(
         &global_home.join("schemas"),
         &ws_dir.join("schemas"),
         &[
+            "workspace-profile.json",
             "planner-output.json",
             "builder-handoff.json",
             "qa-report.json",

@@ -4,6 +4,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::discovery::{RunWorkspaceProfileSnapshot, WorkspaceProfileSelection};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunRequest {
     pub user_request: String,
@@ -13,6 +15,8 @@ pub struct RunRequest {
     pub selected_config: Option<PathBuf>,
     #[serde(default)]
     pub prompt_overrides: PromptOverrides,
+    #[serde(default)]
+    pub workspace_profile: Option<WorkspaceProfileSelection>,
 }
 
 /// Optional per-run prompt overrides supplied by the launcher UI.
@@ -42,6 +46,8 @@ pub struct RunLaunchSnapshot {
     pub feature_limit_is_hard: bool,
     pub user_request: String,
     pub prompts: PromptSnapshot,
+    #[serde(default)]
+    pub workspace_profile: Option<RunWorkspaceProfileSnapshot>,
     pub launched_at: DateTime<Utc>,
 }
 
@@ -635,16 +641,25 @@ impl PlanningRequest {
 }
 
 impl FeatureContract {
-    pub fn from_feature(feature: &Feature, verification_commands: &[Vec<String>]) -> Self {
+    pub fn from_feature(
+        feature: &Feature,
+        verification_commands: &[Vec<String>],
+        workspace_profile: Option<&crate::discovery::WorkspaceProfile>,
+    ) -> Self {
+        let mut scope_notes = vec![
+            "Keep the control loop outside the worker process.".to_string(),
+            "Treat artifacts on disk as the durable source of truth.".to_string(),
+            "Favor restartable sessions over excessively long, fragile context windows."
+                .to_string(),
+        ];
+        if let Some(profile) = workspace_profile {
+            scope_notes.extend(profile.contract_scope_notes());
+        }
+
         Self {
             feature_id: feature.id.clone(),
             title: feature.title.clone(),
-            scope_notes: vec![
-                "Keep the control loop outside the worker process.".to_string(),
-                "Treat artifacts on disk as the durable source of truth.".to_string(),
-                "Favor restartable sessions over excessively long, fragile context windows."
-                    .to_string(),
-            ],
+            scope_notes,
             acceptance_criteria: feature.acceptance_criteria.clone(),
             verification_commands: verification_commands.to_vec(),
         }

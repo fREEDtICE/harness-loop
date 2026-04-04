@@ -144,6 +144,8 @@ pub struct PlannerWorkerConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptConfig {
+    #[serde(default = "default_discovery_prompt_path")]
+    pub discovery: PathBuf,
     pub planner: PathBuf,
     pub builder: PathBuf,
     pub evaluator: PathBuf,
@@ -151,6 +153,8 @@ pub struct PromptConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SchemaConfig {
+    #[serde(default = "default_workspace_profile_schema_path")]
+    pub workspace_profile: PathBuf,
     pub planner_output: PathBuf,
     pub builder_handoff: PathBuf,
     pub qa_report: PathBuf,
@@ -246,6 +250,7 @@ pub struct ResolvedStorageConfig {
 
 #[derive(Debug, Clone)]
 pub struct ResolvedPromptConfig {
+    pub discovery: PathBuf,
     pub planner: PathBuf,
     pub builder: PathBuf,
     pub evaluator: PathBuf,
@@ -253,6 +258,7 @@ pub struct ResolvedPromptConfig {
 
 #[derive(Debug, Clone)]
 pub struct ResolvedSchemaConfig {
+    pub workspace_profile: PathBuf,
     pub planner_output: PathBuf,
     pub builder_handoff: PathBuf,
     pub qa_report: PathBuf,
@@ -279,11 +285,13 @@ impl AppConfig {
             workspace: config.workspace,
             worker: config.worker,
             prompts: ResolvedPromptConfig {
+                discovery: resolve_path(&project_root, &config.prompts.discovery),
                 planner: resolve_path(&project_root, &config.prompts.planner),
                 builder: resolve_path(&project_root, &config.prompts.builder),
                 evaluator: resolve_path(&project_root, &config.prompts.evaluator),
             },
             schemas: ResolvedSchemaConfig {
+                workspace_profile: resolve_path(&project_root, &config.schemas.workspace_profile),
                 planner_output: resolve_path(&project_root, &config.schemas.planner_output),
                 builder_handoff: resolve_path(&project_root, &config.schemas.builder_handoff),
                 qa_report: resolve_path(&project_root, &config.schemas.qa_report),
@@ -332,6 +340,14 @@ impl AppConfig {
 
 fn default_simulation_evaluator_statuses() -> Vec<QaStatus> {
     vec![QaStatus::Pass]
+}
+
+fn default_discovery_prompt_path() -> PathBuf {
+    PathBuf::from("prompts/discovery.md")
+}
+
+fn default_workspace_profile_schema_path() -> PathBuf {
+    PathBuf::from("schemas/workspace-profile.json")
 }
 
 fn default_simulation_session_prefix() -> String {
@@ -396,11 +412,13 @@ evaluator_statuses = ["pass"]
 session_prefix = "sim"
 
 [prompts]
+discovery = "prompts/discovery.md"
 planner = "prompts/planner.md"
 builder = "prompts/builder.md"
 evaluator = "prompts/evaluator.md"
 
 [schemas]
+workspace_profile = "schemas/workspace-profile.json"
 planner_output = "schemas/planner.json"
 builder_handoff = "schemas/builder.json"
 qa_report = "schemas/qa.json"
@@ -437,8 +455,16 @@ commands = []
             vec![QaStatus::Pass]
         );
         assert_eq!(
+            resolved.prompts.discovery,
+            project_root.join("prompts/discovery.md")
+        );
+        assert_eq!(
             resolved.prompts.planner,
             project_root.join("prompts/planner.md")
+        );
+        assert_eq!(
+            resolved.schemas.workspace_profile,
+            project_root.join("schemas/workspace-profile.json")
         );
         assert_eq!(
             resolved.schemas.builder_handoff,
@@ -447,7 +473,7 @@ commands = []
     }
 
     #[test]
-    fn config_rejects_required_screenshots_without_capture_commands() {
+    fn config_defaults_discovery_assets_to_conventional_paths() {
         let temp = tempdir().expect("tempdir");
         let project_root = temp.path();
         let config_dir = project_root.join("config");
@@ -479,6 +505,70 @@ builder = "prompts/builder.md"
 evaluator = "prompts/evaluator.md"
 
 [schemas]
+planner_output = "schemas/planner.json"
+builder_handoff = "schemas/builder.json"
+qa_report = "schemas/qa.json"
+
+[runtime]
+feature_limit = 1
+max_repair_attempts = 1
+services = []
+stacks = []
+
+[evaluator]
+dimensions = ["correctness"]
+require_screenshots = false
+commands = []
+"#,
+        )
+        .expect("write config");
+
+        let resolved = AppConfig::load(&config_file).expect("load config");
+        assert_eq!(
+            resolved.prompts.discovery,
+            project_root.join("prompts/discovery.md")
+        );
+        assert_eq!(
+            resolved.schemas.workspace_profile,
+            project_root.join("schemas/workspace-profile.json")
+        );
+    }
+
+    #[test]
+    fn config_rejects_required_screenshots_without_capture_commands() {
+        let temp = tempdir().expect("tempdir");
+        let project_root = temp.path();
+        let config_dir = project_root.join("config");
+        fs::create_dir_all(&config_dir).expect("create config dir");
+
+        let config_file = config_dir.join("harness.toml");
+        fs::write(
+            &config_file,
+            r#"
+[project]
+root_dir = ".."
+
+[storage]
+runs_dir = ".loopsmith-runs"
+
+[workspace]
+isolation = "direct"
+
+[worker]
+kind = "simulated"
+
+[worker.simulation]
+evaluator_statuses = ["pass"]
+session_prefix = "sim"
+
+[prompts]
+discovery = "prompts/discovery.md"
+planner = "prompts/planner.md"
+builder = "prompts/builder.md"
+evaluator = "prompts/evaluator.md"
+
+[schemas]
+workspace_profile = "schemas/workspace-profile.json"
 planner_output = "schemas/planner.json"
 builder_handoff = "schemas/builder.json"
 qa_report = "schemas/qa.json"
@@ -544,11 +634,13 @@ skip_git_repo_check = true
 resume_sessions = false
 
 [prompts]
+discovery = "prompts/discovery.md"
 planner = "prompts/planner.md"
 builder = "prompts/builder.md"
 evaluator = "prompts/evaluator.md"
 
 [schemas]
+workspace_profile = "schemas/workspace-profile.json"
 planner_output = "schemas/planner.json"
 builder_handoff = "schemas/builder.json"
 qa_report = "schemas/qa.json"

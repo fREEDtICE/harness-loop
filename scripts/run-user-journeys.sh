@@ -40,6 +40,7 @@ resolve_live_lane() {
 
 echo "==> Running deterministic user journeys"
 cargo test --test run_smoke -- --nocapture
+cargo test --test discovery_smoke -- --nocapture
 
 echo "==> Running live user journeys"
 if resolve_live_lane; then

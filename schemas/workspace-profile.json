@@ -1,0 +1,171 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WorkspaceProfile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "workspace_path",
+    "generated_at",
+    "summary",
+    "key_concepts",
+    "tech_stack",
+    "repositories",
+    "dependency_relationships",
+    "api_contracts",
+    "layering",
+    "user_journeys",
+    "e2e_test_cases",
+    "auth",
+    "coding_conventions",
+    "commands",
+    "risks"
+  ],
+  "properties": {
+    "workspace_path": { "type": "string" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "summary": { "type": "string" },
+    "key_concepts": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "tech_stack": { "$ref": "#/$defs/facts" },
+    "repositories": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/repository" }
+    },
+    "dependency_relationships": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/relationship" }
+    },
+    "api_contracts": { "$ref": "#/$defs/facts" },
+    "layering": { "$ref": "#/$defs/layering" },
+    "user_journeys": { "$ref": "#/$defs/facts" },
+    "e2e_test_cases": { "$ref": "#/$defs/facts" },
+    "auth": { "$ref": "#/$defs/facts" },
+    "coding_conventions": { "$ref": "#/$defs/facts" },
+    "commands": { "$ref": "#/$defs/commands" },
+    "risks": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "$defs": {
+    "facts": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/fact" }
+    },
+    "fact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "summary", "evidence"],
+      "properties": {
+        "title": { "type": "string" },
+        "summary": { "type": "string" },
+        "evidence": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "root", "evidence"],
+      "properties": {
+        "name": { "type": "string" },
+        "root": { "type": "string" },
+        "evidence": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "relationship": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "to", "kind", "evidence"],
+      "properties": {
+        "from": { "type": "string" },
+        "to": { "type": "string" },
+        "kind": { "type": "string" },
+        "evidence": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "layer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "responsibilities", "paths"],
+      "properties": {
+        "name": { "type": "string" },
+        "responsibilities": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "paths": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "layering": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "summary",
+        "layers",
+        "allowed_dependency_directions",
+        "unresolved_ambiguities"
+      ],
+      "properties": {
+        "summary": { "type": "string" },
+        "layers": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/layer" }
+        },
+        "allowed_dependency_directions": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "unresolved_ambiguities": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "command", "source"],
+      "properties": {
+        "label": { "type": "string" },
+        "command": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "source": { "type": "string" }
+      }
+    },
+    "commands": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["build", "test", "dev"],
+      "properties": {
+        "build": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/command" }
+        },
+        "test": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/command" }
+        },
+        "dev": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/command" }
+        }
+      }
+    }
+  }
+}
