@@ -12,7 +12,11 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
 
-    #[arg(long, global = true, help = "Disable the GUI and run in headless CLI mode")]
+    #[arg(
+        long,
+        global = true,
+        help = "Disable the GUI and run in headless CLI mode"
+    )]
     no_ui: bool,
 }
 
@@ -83,9 +87,15 @@ async fn main() -> Result<()> {
 fn ensure_ready_for_cli(command: &Command) -> Result<()> {
     match command {
         Command::Init { .. } => {}
-        Command::Run { config: Some(_), .. }
-        | Command::Resume { config: Some(_), .. }
-        | Command::Inspect { config: Some(_), .. } => {}
+        Command::Run {
+            config: Some(_), ..
+        }
+        | Command::Resume {
+            config: Some(_), ..
+        }
+        | Command::Inspect {
+            config: Some(_), ..
+        } => {}
         _ => {
             if !setup::has_default_config()? {
                 setup::run_interactive_setup()?;

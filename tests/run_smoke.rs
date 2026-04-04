@@ -136,10 +136,7 @@ fn simulated_cli_resume_continues_past_failed_features_when_configured()
         services: vec![default_service()],
         stacks: Vec::new(),
     })?;
-    let output = fixture.run(
-        "First run stops at first failure.\n",
-        Some(2),
-    )?;
+    let output = fixture.run("First run stops at first failure.\n", Some(2))?;
     fixture.assert_success(&output)?;
 
     let run = fixture.parse_run(&output)?;
@@ -695,10 +692,7 @@ commands = [
     )?;
 
     let output = fixture.run("Surface the config validation error.\n", None)?;
-    fixture.assert_failure_contains(
-        &output,
-        "missing field `simulation`",
-    )?;
+    fixture.assert_failure_contains(&output, "missing field `simulation`")?;
 
     Ok(())
 }
@@ -746,10 +740,7 @@ commands = [
     )?;
 
     let output = fixture.run("Surface the missing codex worker configuration.\n", None)?;
-    fixture.assert_failure_contains(
-        &output,
-        "missing field `codex`",
-    )?;
+    fixture.assert_failure_contains(&output, "missing field `codex`")?;
 
     Ok(())
 }

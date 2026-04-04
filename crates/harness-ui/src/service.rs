@@ -388,11 +388,19 @@ fn build_worker_from_selection(selection: &WorkerSelection) -> Result<Box<dyn Wo
             Ok(Box::new(CodexCliWorker::new(codex.clone())))
         }
         WorkerSelection::ClaudeCli { claude } => {
-            verify_worker_binary(&claude.binary, "claude", "npm install -g @anthropic-ai/claude-code")?;
+            verify_worker_binary(
+                &claude.binary,
+                "claude",
+                "npm install -g @anthropic-ai/claude-code",
+            )?;
             Ok(Box::new(ClaudeCliWorker::new(claude.clone())))
         }
         WorkerSelection::GeminiCli { gemini } => {
-            verify_worker_binary(&gemini.binary, "gemini", "npm install -g @anthropic-ai/gemini-cli")?;
+            verify_worker_binary(
+                &gemini.binary,
+                "gemini",
+                "npm install -g @anthropic-ai/gemini-cli",
+            )?;
             Ok(Box::new(GeminiCliWorker::new(gemini.clone())))
         }
         WorkerSelection::Simulated { simulation } => {

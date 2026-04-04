@@ -135,14 +135,12 @@ impl ClaudeCliWorker {
             process.process_group(0);
         }
 
-        let mut child = process
-            .spawn()
-            .with_context(|| {
-                format!(
-                    "failed to execute `{}`. Is the Claude CLI installed and available in PATH?",
-                    self.config.binary
-                )
-            })?;
+        let mut child = process.spawn().with_context(|| {
+            format!(
+                "failed to execute `{}`. Is the Claude CLI installed and available in PATH?",
+                self.config.binary
+            )
+        })?;
         let child_pid = child.id();
 
         if let Some(mut stdin) = child.stdin.take() {
@@ -165,13 +163,9 @@ impl ClaudeCliWorker {
         let stderr_log_path = artifacts.stderr_log.clone();
 
         let stdout_handle: tokio::task::JoinHandle<Result<Vec<u8>>> =
-            tokio::spawn(async move {
-                tee_stream_to_file(child_stdout, &stdout_log_path).await
-            });
+            tokio::spawn(async move { tee_stream_to_file(child_stdout, &stdout_log_path).await });
         let stderr_handle: tokio::task::JoinHandle<Result<Vec<u8>>> =
-            tokio::spawn(async move {
-                tee_stream_to_file(child_stderr, &stderr_log_path).await
-            });
+            tokio::spawn(async move { tee_stream_to_file(child_stderr, &stderr_log_path).await });
 
         let wait_result = child.wait().await;
 
@@ -286,10 +280,7 @@ impl ClaudeCliWorker {
             command.push("--dangerously-skip-permissions".to_string());
         }
 
-        command.extend([
-            "--output-format".to_string(),
-            "json".to_string(),
-        ]);
+        command.extend(["--output-format".to_string(), "json".to_string()]);
 
         command
     }

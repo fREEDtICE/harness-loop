@@ -34,10 +34,7 @@ fn platform_config_template() -> String {
         r#"  ["/usr/bin/env", "true"]"#
     };
 
-    TEMPLATE_CONFIG.replace(
-        r#"  ["/usr/bin/env", "true"]"#,
-        noop_command,
-    )
+    TEMPLATE_CONFIG.replace(r#"  ["/usr/bin/env", "true"]"#, noop_command)
 }
 
 const GLOBAL_TEMPLATES: &[TemplateFile] = &[
@@ -112,17 +109,15 @@ pub fn ensure_global_home() -> Result<PathBuf> {
         let target = home.join(template.relative_path);
         if !target.exists() {
             if let Some(parent) = target.parent() {
-                fs::create_dir_all(parent).with_context(|| {
-                    format!("failed to create directory {}", parent.display())
-                })?;
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("failed to create directory {}", parent.display()))?;
             }
             let content = match &template.content {
                 TemplateContent::Static(s) => (*s).to_string(),
                 TemplateContent::PlatformAdaptive(f) => f(),
             };
-            fs::write(&target, content).with_context(|| {
-                format!("failed to write template {}", target.display())
-            })?;
+            fs::write(&target, content)
+                .with_context(|| format!("failed to write template {}", target.display()))?;
             info!(file = %target.display(), "wrote missing template");
         }
     }
@@ -212,13 +207,11 @@ fn ensure_workspace_templates(ws_dir: &Path) -> Result<()> {
         let target = ws_dir.join(rel_path);
         if !target.exists() {
             if let Some(parent) = target.parent() {
-                fs::create_dir_all(parent).with_context(|| {
-                    format!("failed to create directory {}", parent.display())
-                })?;
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("failed to create directory {}", parent.display()))?;
             }
-            fs::write(&target, content).with_context(|| {
-                format!("failed to write {}", target.display())
-            })?;
+            fs::write(&target, content)
+                .with_context(|| format!("failed to write {}", target.display()))?;
             info!(file = %target.display(), "wrote missing workspace template");
         }
     }
@@ -227,8 +220,7 @@ fn ensure_workspace_templates(ws_dir: &Path) -> Result<()> {
 
 /// Copies config, prompts, and schemas from the global home to a workspace-local directory.
 fn copy_global_to_workspace(global_home: &Path, ws_dir: &Path) -> Result<()> {
-    fs::create_dir_all(ws_dir)
-        .with_context(|| format!("failed to create {}", ws_dir.display()))?;
+    fs::create_dir_all(ws_dir).with_context(|| format!("failed to create {}", ws_dir.display()))?;
 
     let global_config = global_home.join("config/default.toml");
     let ws_config = ws_dir.join("config.toml");
@@ -277,10 +269,7 @@ fn copy_global_to_workspace(global_home: &Path, ws_dir: &Path) -> Result<()> {
 fn adjust_config_for_workspace(content: &str) -> String {
     let mut result = content.to_string();
 
-    result = result.replace(
-        "root_dir = \"..\"",
-        "root_dir = \"..\"",
-    );
+    result = result.replace("root_dir = \"..\"", "root_dir = \"..\"");
 
     result = result.replace(
         "planner = \"prompts/planner.md\"",
@@ -319,9 +308,8 @@ fn copy_dir_contents(src_dir: &Path, dst_dir: &Path, files: &[&str]) -> Result<(
         let src = src_dir.join(file);
         let dst = dst_dir.join(file);
         if src.exists() {
-            fs::copy(&src, &dst).with_context(|| {
-                format!("failed to copy {} → {}", src.display(), dst.display())
-            })?;
+            fs::copy(&src, &dst)
+                .with_context(|| format!("failed to copy {} → {}", src.display(), dst.display()))?;
             info!(file = %dst.display(), "copied template");
         }
     }
@@ -332,17 +320,15 @@ fn write_templates(target_dir: &Path, templates: &[TemplateFile]) -> Result<()> 
     for template in templates {
         let target = target_dir.join(template.relative_path);
         if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!("failed to create directory {}", parent.display())
-            })?;
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create directory {}", parent.display()))?;
         }
         let content = match &template.content {
             TemplateContent::Static(s) => (*s).to_string(),
             TemplateContent::PlatformAdaptive(f) => f(),
         };
-        fs::write(&target, content).with_context(|| {
-            format!("failed to write template {}", target.display())
-        })?;
+        fs::write(&target, content)
+            .with_context(|| format!("failed to write template {}", target.display()))?;
         info!(file = %target.display(), "wrote template");
     }
 
@@ -350,7 +336,11 @@ fn write_templates(target_dir: &Path, templates: &[TemplateFile]) -> Result<()> 
 }
 
 const GLOBAL_PATCH_KEYS: &[&str] = &["worker", "workspace"];
-const RUNTIME_PATCH_KEYS: &[&str] = &["feature_limit", "max_repair_attempts", "continue_after_failure"];
+const RUNTIME_PATCH_KEYS: &[&str] = &[
+    "feature_limit",
+    "max_repair_attempts",
+    "continue_after_failure",
+];
 
 /// Patches a workspace config with values from the global config.
 ///
@@ -367,8 +357,8 @@ pub fn patch_workspace_from_global(workspace_path: &Path, global_toml: &str) -> 
     let ws_content = fs::read_to_string(&ws_config_path)
         .with_context(|| format!("failed to read {}", ws_config_path.display()))?;
 
-    let global: toml::Table = toml::from_str(global_toml)
-        .context("failed to parse global config as TOML")?;
+    let global: toml::Table =
+        toml::from_str(global_toml).context("failed to parse global config as TOML")?;
     let mut ws: toml::Table = toml::from_str(&ws_content)
         .with_context(|| format!("failed to parse {}", ws_config_path.display()))?;
 
@@ -391,8 +381,8 @@ pub fn patch_workspace_from_global(workspace_path: &Path, global_toml: &str) -> 
         }
     }
 
-    let output = toml::to_string_pretty(&ws)
-        .context("failed to serialize patched workspace config")?;
+    let output =
+        toml::to_string_pretty(&ws).context("failed to serialize patched workspace config")?;
     fs::write(&ws_config_path, output)
         .with_context(|| format!("failed to write {}", ws_config_path.display()))?;
 

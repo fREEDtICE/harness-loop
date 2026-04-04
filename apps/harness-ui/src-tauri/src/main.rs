@@ -7,7 +7,10 @@ use loopsmith_core::{
     paths::normalize_path,
     storage::{LoopSmithStore, WorkspaceRecord},
 };
-use loopsmith_ui::{HarnessUiService, LaunchDraft, WorkspaceRunSummary};
+use loopsmith_ui::{
+    HarnessUiService, LaunchDraft, StageLogSseServer, WorkspaceRunSummary,
+    validate_stage_stdout_log_path,
+};
 use rfd::FileDialog;
 use serde::Serialize;
 use tauri::{Manager, State};
@@ -16,6 +19,7 @@ use tracing::debug;
 struct AppState {
     service: HarnessUiService,
     store: Mutex<LoopSmithStore>,
+    stage_log_sse: StageLogSseServer,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -48,6 +52,8 @@ impl AppState {
         Self {
             service: HarnessUiService,
             store: Mutex::new(store),
+            stage_log_sse: StageLogSseServer::bind_loopback()
+                .expect("failed to start stage stdout SSE server"),
         }
     }
 }
@@ -386,7 +392,7 @@ fn build_prompt_bundle(
 
 #[tauri::command]
 fn read_stage_log(path: String) -> Result<String, String> {
-    let path = PathBuf::from(path);
+    let path = validate_stage_stdout_log_path(&PathBuf::from(path)).map_err(render_error)?;
     if !path.exists() {
         debug!(path = %path.display(), "read_stage_log requested missing path");
         return Ok(String::new());
@@ -398,6 +404,14 @@ fn read_stage_log(path: String) -> Result<String, String> {
         "read_stage_log served stage output"
     );
     Ok(content)
+}
+
+#[tauri::command]
+fn stage_log_stream_url(state: State<'_, AppState>, path: String) -> Result<String, String> {
+    state
+        .stage_log_sse
+        .stream_url(PathBuf::from(path))
+        .map_err(render_error)
 }
 
 #[tauri::command]
@@ -517,6 +531,7 @@ fn main() {
             save_setup_config,
             write_ui_state,
             read_stage_log,
+            stage_log_stream_url,
             open_file,
             reveal_in_finder,
         ])

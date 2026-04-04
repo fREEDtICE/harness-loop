@@ -48,18 +48,10 @@ pub struct WorkerConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorkerSelection {
-    CodexCli {
-        codex: CodexWorkerConfig,
-    },
-    ClaudeCli {
-        claude: ClaudeWorkerConfig,
-    },
-    GeminiCli {
-        gemini: GeminiWorkerConfig,
-    },
-    Simulated {
-        simulation: SimulationWorkerConfig,
-    },
+    CodexCli { codex: CodexWorkerConfig },
+    ClaudeCli { claude: ClaudeWorkerConfig },
+    GeminiCli { gemini: GeminiWorkerConfig },
+    Simulated { simulation: SimulationWorkerConfig },
 }
 
 impl WorkerSelection {
@@ -429,7 +421,10 @@ commands = []
 
         let resolved = AppConfig::load(&config_file).expect("load config");
         assert_eq!(resolved.project_root, project_root);
-        assert_eq!(resolved.storage.runs_dir, project_root.join(".loopsmith-runs"));
+        assert_eq!(
+            resolved.storage.runs_dir,
+            project_root.join(".loopsmith-runs")
+        );
         assert_eq!(resolved.workspace.isolation, WorkspaceIsolation::Direct);
         assert_eq!(resolved.worker.selection.kind(), WorkerKind::Simulated);
         assert_eq!(

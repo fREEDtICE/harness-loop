@@ -153,7 +153,10 @@ where
             let next_index = state
                 .features
                 .iter()
-                .position(|f| f.status != FeatureLifecycleStatus::Failed && f.status != FeatureLifecycleStatus::Passed)
+                .position(|f| {
+                    f.status != FeatureLifecycleStatus::Failed
+                        && f.status != FeatureLifecycleStatus::Passed
+                })
                 .unwrap_or(state.features.len());
 
             if next_index >= state.features.len() {
@@ -203,15 +206,15 @@ where
     pub fn inspect_run(&self, run_root: impl AsRef<Path>) -> Result<RunState> {
         let run_root = run_root.as_ref();
         let layout = self.layout_from_run_root(run_root);
-        let mut state: RunState = self
-            .artifacts
-            .read_json(&layout.state_file)
-            .with_context(|| {
-                format!(
-                    "failed to load run state from {}",
-                    layout.state_file.display()
-                )
-            })?;
+        let mut state: RunState =
+            self.artifacts
+                .read_json(&layout.state_file)
+                .with_context(|| {
+                    format!(
+                        "failed to load run state from {}",
+                        layout.state_file.display()
+                    )
+                })?;
         state.backfill_log_paths();
         if state.run_title.is_empty() {
             if let Ok(plan) = self.artifacts.read_json::<PlanDocument>(&state.plan_file) {

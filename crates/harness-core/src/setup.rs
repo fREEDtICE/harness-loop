@@ -56,10 +56,7 @@ const CLI_OPTIONS: &[CliOption] = &[
         label: "Gemini CLI",
         kind_tag: "gemini_cli",
         binary: "gemini",
-        recommended_models: &[
-            "gemini-2.5-pro",
-            "gemini-2.5-flash",
-        ],
+        recommended_models: &["gemini-2.5-pro", "gemini-2.5-flash"],
     },
 ];
 
@@ -136,7 +133,10 @@ pub fn run_interactive_setup() -> Result<SetupResult> {
         selected_cli.label, selected_model
     );
     println!("  Binary:       {}", resolved_binary);
-    println!("  Prompts:      {}/prompts/ (3 built-in files)", workspace.display());
+    println!(
+        "  Prompts:      {}/prompts/ (3 built-in files)",
+        workspace.display()
+    );
     println!();
 
     let confirmed = Confirm::with_theme(&theme)

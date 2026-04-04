@@ -79,7 +79,10 @@ pub fn probe_environment() -> EnvironmentReport {
     info!("probing local environment for CLI tools");
 
     let node = probe_node();
-    let tools: Vec<ToolProbe> = TOOL_SPECS.iter().map(|spec| probe_tool(spec, &node)).collect();
+    let tools: Vec<ToolProbe> = TOOL_SPECS
+        .iter()
+        .map(|spec| probe_tool(spec, &node))
+        .collect();
 
     let report = EnvironmentReport { tools, node };
 
@@ -124,7 +127,7 @@ fn probe_node() -> RuntimeProbe {
             return RuntimeProbe {
                 name: "node",
                 status: RuntimeStatus::NotFound,
-            }
+            };
         }
     };
 
@@ -162,7 +165,7 @@ fn probe_tool(spec: &ToolSpec, node: &RuntimeProbe) -> ToolProbe {
                 display_name: spec.display_name,
                 binary_name: spec.binary,
                 status: ToolStatus::NotFound,
-            }
+            };
         }
     };
 

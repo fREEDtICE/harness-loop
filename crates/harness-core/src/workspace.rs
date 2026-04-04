@@ -205,6 +205,11 @@ mod tests {
         assert_eq!(prepared.execution_workspace, repo);
         assert_eq!(prepared.execution_root, repo);
         assert!(prepared.execution_workspace.join("README.md").exists());
-        assert!(prepared.execution_workspace.join(".loopsmith-runs").exists());
+        assert!(
+            prepared
+                .execution_workspace
+                .join(".loopsmith-runs")
+                .exists()
+        );
     }
 }

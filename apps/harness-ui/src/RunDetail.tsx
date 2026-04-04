@@ -3,6 +3,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { basename, formatDate } from "./utils";
 import { useTranslation } from "react-i18next";
 import type { RunState, FeatureRunState, RunStageRecord } from "./types";
+import {
+  applyStageLogStreamChunk,
+  decodeUtf8,
+  encodeUtf8,
+  parseLogEvents,
+} from "./runDetailLogModel";
+import type { LogEvent, MessagePayload } from "./runDetailLogModel";
 
 function fileBasename(p: string): string {
   const parts = p.replace(/\\/g, "/").split("/");
@@ -338,113 +345,6 @@ function FeatureArtifacts({ feature, workspacePath }: { feature: FeatureRunState
       {qaReport ? <QaReportCard data={qaReport} /> : null}
     </div>
   );
-}
-
-type MessagePayload =
-  | { shape: "plan"; goal: string; features: PlanFeature[] }
-  | { shape: "build"; summary: string; changedFiles: string[] }
-  | { shape: "evaluate"; status: string; summary: string; findings: string[] }
-  | { shape: "plain"; text: string };
-
-type LogEvent =
-  | { kind: "session"; threadId: string }
-  | { kind: "command"; command: string; status: "running" | "done"; exitCode: number | null; output: string }
-  | { kind: "file_change"; changes: { path: string; kind: string }[] }
-  | { kind: "message"; payload: MessagePayload }
-  | { kind: "usage"; input: number; cached: number; output: number };
-
-function parseLogEvents(raw: string): LogEvent[] {
-  const events: LogEvent[] = [];
-  const pendingCmds = new Map<string, number>();
-  const seenFileChanges = new Set<string>();
-  for (const line of raw.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    let obj: Record<string, unknown>;
-    try { obj = JSON.parse(trimmed); } catch { continue; }
-    const type = obj.type as string | undefined;
-    const item = (obj.item ?? {}) as Record<string, unknown>;
-    const itemType = item.type as string | undefined;
-    const itemId = item.id as string | undefined;
-
-    if (type === "thread.started") {
-      const threadId = (obj.thread_id ?? obj.session_id ?? "") as string;
-      if (threadId) events.push({ kind: "session", threadId });
-    } else if (type === "item.started" && itemType === "command_execution") {
-      const cmd = (item.command ?? "") as string;
-      events.push({ kind: "command", command: cmd, status: "running", exitCode: null, output: "" });
-      if (itemId) pendingCmds.set(itemId, events.length - 1);
-    } else if (type === "item.completed" && itemType === "command_execution") {
-      const cmd = (item.command ?? "") as string;
-      const exitCode = (item.exit_code ?? null) as number | null;
-      const output = (item.aggregated_output ?? "") as string;
-      if (itemId && pendingCmds.has(itemId)) {
-        const idx = pendingCmds.get(itemId)!;
-        events[idx] = { kind: "command", command: cmd, status: "done", exitCode, output };
-        pendingCmds.delete(itemId);
-      } else {
-        events.push({ kind: "command", command: cmd, status: "done", exitCode, output });
-      }
-    } else if ((type === "item.started" || type === "item.completed") && itemType === "file_change") {
-      if (itemId && seenFileChanges.has(itemId)) continue;
-      if (itemId) seenFileChanges.add(itemId);
-      const changes = (item.changes ?? []) as { path: string; kind: string }[];
-      if (changes.length > 0) {
-        events.push({ kind: "file_change", changes });
-      }
-    } else if (type === "item.completed" && itemType === "agent_message") {
-      const text = (item.text ?? "") as string;
-      let payload: MessagePayload;
-      try {
-        const parsed = JSON.parse(text) as Record<string, unknown>;
-        if (parsed.goal && Array.isArray(parsed.features)) {
-          payload = {
-            shape: "plan",
-            goal: (parsed.goal ?? "") as string,
-            features: (parsed.features as PlanFeature[]).map((f) => ({
-              id: f.id ?? "",
-              title: f.title ?? "",
-              summary: f.summary ?? "",
-              acceptance_criteria: f.acceptance_criteria ?? "",
-            })),
-          };
-        } else if (parsed.status !== undefined && parsed.findings !== undefined) {
-          payload = {
-            shape: "evaluate",
-            status: (parsed.status ?? "") as string,
-            summary: (parsed.summary ?? "") as string,
-            findings: Array.isArray(parsed.findings)
-              ? (parsed.findings as string[])
-              : [],
-          };
-        } else if (parsed.summary !== undefined) {
-          payload = {
-            shape: "build",
-            summary: (parsed.summary ?? "") as string,
-            changedFiles: Array.isArray(parsed.changed_files)
-              ? (parsed.changed_files as string[])
-              : [],
-          };
-        } else {
-          payload = { shape: "plain", text };
-        }
-      } catch {
-        payload = { shape: "plain", text };
-      }
-      events.push({ kind: "message", payload });
-    } else if (type === "turn.completed") {
-      const usage = (obj.usage ?? {}) as Record<string, number>;
-      if (usage.input_tokens || usage.output_tokens) {
-        events.push({
-          kind: "usage",
-          input: usage.input_tokens ?? 0,
-          cached: usage.cached_input_tokens ?? 0,
-          output: usage.output_tokens ?? 0,
-        });
-      }
-    }
-  }
-  return events;
 }
 
 function shortPath(full: string): string {
@@ -784,6 +684,7 @@ function StageLogPanel({
   const [expanded, setExpanded] = useState(isLive);
   const [logContent, setLogContent] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
+  const logBytesRef = useRef<Uint8Array<ArrayBufferLike>>(new Uint8Array(0));
   const wasAtBottomRef = useRef(true);
   const prevLiveRef = useRef(isLive);
 
@@ -794,30 +695,110 @@ function StageLogPanel({
     }
   }, [isLive]);
 
-  const fetchLog = useCallback(() => {
-    if (!stage.stdout_log) return;
-    invoke<string>("read_stage_log", { path: stage.stdout_log }).then(
-      (content) => {
-        setLogContent((prev) => {
-          if (content !== prev && scrollRef.current) {
-            const el = scrollRef.current;
-            wasAtBottomRef.current =
-              el.scrollTop + el.clientHeight >= el.scrollHeight - 32;
-          }
-          return content;
-        });
-      },
-      () => {},
-    );
+  useEffect(() => {
+    logBytesRef.current = new Uint8Array();
+    setLogContent("");
   }, [stage.stdout_log]);
 
+  const rememberScrollPosition = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) {
+      return;
+    }
+    wasAtBottomRef.current =
+      el.scrollTop + el.clientHeight >= el.scrollHeight - 32;
+  }, []);
+
+  const setLogBytes = useCallback(
+    (bytes: Uint8Array<ArrayBufferLike>) => {
+      const content = decodeUtf8(bytes);
+      logBytesRef.current = bytes;
+      setLogContent((prev) => {
+        if (content !== prev) {
+          rememberScrollPosition();
+        }
+        return content;
+      });
+    },
+    [rememberScrollPosition],
+  );
+
   useEffect(() => {
-    if (!expanded) return;
-    fetchLog();
-    if (!isLive) return;
-    const id = setInterval(fetchLog, 1000);
-    return () => clearInterval(id);
-  }, [expanded, isLive, fetchLog]);
+    if (!expanded || !stage.stdout_log) {
+      return;
+    }
+
+    let cancelled = false;
+    let source: EventSource | null = null;
+
+    const readFromDisk = () => {
+      invoke<string>("read_stage_log", { path: stage.stdout_log }).then(
+        (content) => {
+          if (cancelled) {
+            return;
+          }
+          setLogBytes(encodeUtf8(content));
+        },
+        () => {},
+      );
+    };
+
+    if (!isLive) {
+      readFromDisk();
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    invoke<string>("stage_log_stream_url", { path: stage.stdout_log }).then(
+      (url) => {
+        if (cancelled) {
+          return;
+        }
+
+        source = new EventSource(url);
+
+        const handleChunk = (eventName: "snapshot" | "append") => {
+          return (event: MessageEvent<string>) => {
+            if (cancelled) {
+              return;
+            }
+
+            const nextBytes = applyStageLogStreamChunk(
+              logBytesRef.current,
+              eventName,
+              event.data,
+            );
+
+            if (nextBytes === null) {
+              readFromDisk();
+              return;
+            }
+
+            setLogBytes(nextBytes);
+          };
+        };
+
+        source.addEventListener("snapshot", handleChunk("snapshot") as EventListener);
+        source.addEventListener("append", handleChunk("append") as EventListener);
+        source.onerror = () => {
+          if (!cancelled && source?.readyState === EventSource.CLOSED) {
+            readFromDisk();
+          }
+        };
+      },
+      () => {
+        if (!cancelled) {
+          readFromDisk();
+        }
+      },
+    );
+
+    return () => {
+      cancelled = true;
+      source?.close();
+    };
+  }, [expanded, isLive, setLogBytes, stage.stdout_log]);
 
   const events = useMemo(() => parseLogEvents(logContent), [logContent]);
 

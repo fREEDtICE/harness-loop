@@ -36,9 +36,7 @@ pub fn init_logging() -> Result<LogGuard> {
         )
     });
 
-    let stderr_layer = fmt::layer()
-        .with_target(false)
-        .with_writer(std::io::stderr);
+    let stderr_layer = fmt::layer().with_target(false).with_writer(std::io::stderr);
 
     let file_filter = EnvFilter::new("debug");
     let file_layer = fmt::layer()
