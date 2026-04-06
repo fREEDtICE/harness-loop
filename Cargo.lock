@@ -2234,11 +2234,7 @@ dependencies = [
  "async-trait",
  "clap",
  "loopsmith-core",
- "loopsmith-ui",
- "loopsmith-worker-claude",
- "loopsmith-worker-codex",
- "loopsmith-worker-gemini",
- "loopsmith-worker-simulated",
+ "loopsmith-orchestration",
  "serde_json",
  "tempfile",
  "tokio",
@@ -2269,12 +2265,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "loopsmith-desktop-shell"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "loopsmith-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "loopsmith-gui"
 version = "0.1.0"
 dependencies = [
  "chrono",
  "loopsmith-core",
- "loopsmith-ui",
+ "loopsmith-desktop-shell",
+ "loopsmith-orchestration",
  "rfd",
  "serde",
  "tauri",
@@ -2283,18 +2291,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "loopsmith-ui"
+name = "loopsmith-orchestration"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.22.1",
  "chrono",
  "loopsmith-core",
- "loopsmith-worker-claude",
- "loopsmith-worker-codex",
- "loopsmith-worker-gemini",
- "loopsmith-worker-simulated",
+ "loopsmith-worker-factory",
  "serde",
  "serde_json",
  "sha2",
@@ -2333,6 +2337,19 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "loopsmith-worker-factory"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "loopsmith-core",
+ "loopsmith-worker-claude",
+ "loopsmith-worker-codex",
+ "loopsmith-worker-gemini",
+ "loopsmith-worker-simulated",
 ]
 
 [[package]]

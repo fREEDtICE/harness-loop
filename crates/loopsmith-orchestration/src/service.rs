@@ -4,27 +4,20 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use loopsmith_core::{
-    artifacts::{FileArtifactStore, StageArtifactSet},
-    config::{AppConfig, PlannerWorkerConfig, ResolvedConfig, WorkerSelection},
+    artifacts::FileArtifactStore,
+    config::{AppConfig, ResolvedConfig},
     discovery::{
         WorkspaceDiscoveryPayload, WorkspaceDiscoveryPhase, WorkspaceDiscoveryRequest,
         WorkspaceDiscoveryStatus, WorkspaceDiscoveryStore, WorkspaceProfile,
         WorkspaceProfileSelection, profile_fingerprint, scan_workspace,
     },
-    domain::{
-        BuilderHandoff, EvaluationRequest, FeatureContract, PromptOverrides, PromptSnapshot,
-        QaReport, QaStatus, RunLifecycleStatus, RunRequest, RunState,
-    },
+    domain::{PromptOverrides, PromptSnapshot, QaStatus, RunLifecycleStatus, RunRequest, RunState},
     paths::normalize_path,
-    worker::{DiscoveryContext, DiscoveryWorkerResult, WorkerAdapter, WorkerContext},
+    worker::{DiscoveryContext, WorkerAdapter},
 };
-use loopsmith_worker_claude::ClaudeCliWorker;
-use loopsmith_worker_codex::CodexCliWorker;
-use loopsmith_worker_gemini::GeminiCliWorker;
-use loopsmith_worker_simulated::SimulatedWorker;
+use loopsmith_worker_factory::{build_configured_worker, build_discovery_worker};
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_DISCOVERY_PROMPT: &str = include_str!("../../../prompts/discovery.md");
@@ -116,6 +109,19 @@ impl HarnessUiService {
         self.start_prepared_run(prepared).await
     }
 
+    pub async fn discover_workspace(
+        &self,
+        config_path: impl AsRef<Path>,
+        workspace_path: impl AsRef<Path>,
+    ) -> Result<WorkspaceProfileSelection> {
+        let config_path = normalize_path(config_path.as_ref().to_path_buf());
+        let workspace_path = self.validate_workspace_path(workspace_path)?;
+        let resolved_config = AppConfig::load(&config_path)?;
+        let discovery_worker = build_discovery_worker(&resolved_config)?;
+        refresh_workspace_profile(&resolved_config, discovery_worker.as_ref(), &workspace_path)
+            .await
+    }
+
     pub async fn start_prepared_run(&self, mut prepared: PreparedLaunch) -> Result<RunState> {
         let discovery_worker = build_discovery_worker(&prepared.resolved_config)?;
         let workspace_profile = refresh_workspace_profile(
@@ -128,15 +134,7 @@ impl HarnessUiService {
 
         let artifact_store =
             FileArtifactStore::new(prepared.resolved_config.storage.runs_dir.clone());
-        let default_worker =
-            build_worker_from_selection(&prepared.resolved_config.worker.selection)?;
-        let worker: Box<dyn WorkerAdapter> =
-            if let Some(planner) = prepared.resolved_config.planner_worker() {
-                let planner_worker = build_worker_from_planner_config(planner)?;
-                Box::new(PlannerRoutedWorker::new(planner_worker, default_worker))
-            } else {
-                default_worker
-            };
+        let worker = build_configured_worker(&prepared.resolved_config)?;
         let controller = loopsmith_core::controller::HarnessController::new(
             prepared.resolved_config,
             artifact_store,
@@ -168,14 +166,7 @@ impl HarnessUiService {
         let run_root = normalize_path(run_root.as_ref().to_path_buf());
         let resolved_config = AppConfig::load(&config_path)?;
         let artifact_store = FileArtifactStore::new(resolved_config.storage.runs_dir.clone());
-        let default_worker = build_worker_from_selection(&resolved_config.worker.selection)?;
-        let worker: Box<dyn WorkerAdapter> = if let Some(planner) = resolved_config.planner_worker()
-        {
-            let planner_worker = build_worker_from_planner_config(planner)?;
-            Box::new(PlannerRoutedWorker::new(planner_worker, default_worker))
-        } else {
-            default_worker
-        };
+        let worker = build_configured_worker(&resolved_config)?;
         let controller = loopsmith_core::controller::HarnessController::new(
             resolved_config,
             artifact_store,
@@ -286,14 +277,6 @@ fn truncate_str(text: &str, max_chars: usize) -> String {
     } else {
         let truncated: String = first_line.chars().take(max_chars).collect();
         format!("{truncated}…")
-    }
-}
-
-fn build_discovery_worker(config: &ResolvedConfig) -> Result<Box<dyn WorkerAdapter>> {
-    if let Some(planner) = config.planner_worker() {
-        build_worker_from_planner_config(planner)
-    } else {
-        build_worker_from_selection(&config.worker.selection)
     }
 }
 
@@ -611,145 +594,10 @@ where
     Fut: std::future::Future<Output = Result<RunState>>,
 {
     let artifact_store = FileArtifactStore::new(config.storage.runs_dir.clone());
-    let default_worker = build_worker_from_selection(&config.worker.selection)?;
-    let worker: Box<dyn WorkerAdapter> = if let Some(planner) = config.planner_worker() {
-        let planner_worker = build_worker_from_planner_config(planner)?;
-        Box::new(PlannerRoutedWorker::new(planner_worker, default_worker))
-    } else {
-        default_worker
-    };
+    let worker = build_configured_worker(&config)?;
     let controller =
         loopsmith_core::controller::HarnessController::new(config, artifact_store, worker);
     f(controller).await
-}
-
-struct PlannerRoutedWorker {
-    planner: Box<dyn WorkerAdapter>,
-    default: Box<dyn WorkerAdapter>,
-}
-
-impl PlannerRoutedWorker {
-    fn new(planner: Box<dyn WorkerAdapter>, default: Box<dyn WorkerAdapter>) -> Self {
-        Self { planner, default }
-    }
-}
-
-#[async_trait]
-impl WorkerAdapter for PlannerRoutedWorker {
-    async fn discover(
-        &self,
-        context: &DiscoveryContext,
-        artifacts: &loopsmith_core::discovery::DiscoveryArtifactSet,
-        request: &WorkspaceDiscoveryRequest,
-    ) -> Result<DiscoveryWorkerResult> {
-        self.planner.discover(context, artifacts, request).await
-    }
-
-    async fn plan(
-        &self,
-        context: &WorkerContext,
-        artifacts: &StageArtifactSet,
-        request: &loopsmith_core::domain::PlanningRequest,
-    ) -> Result<loopsmith_core::domain::WorkerResult> {
-        self.planner.plan(context, artifacts, request).await
-    }
-
-    async fn build(
-        &self,
-        context: &WorkerContext,
-        feature: &loopsmith_core::artifacts::FeatureLayout,
-        artifacts: &StageArtifactSet,
-        contract: &FeatureContract,
-    ) -> Result<loopsmith_core::domain::WorkerResult> {
-        self.default
-            .build(context, feature, artifacts, contract)
-            .await
-    }
-
-    async fn evaluate(
-        &self,
-        context: &WorkerContext,
-        feature: &loopsmith_core::artifacts::FeatureLayout,
-        artifacts: &StageArtifactSet,
-        request: &EvaluationRequest,
-    ) -> Result<loopsmith_core::domain::WorkerResult> {
-        self.default
-            .evaluate(context, feature, artifacts, request)
-            .await
-    }
-
-    async fn repair(
-        &self,
-        context: &WorkerContext,
-        feature: &loopsmith_core::artifacts::FeatureLayout,
-        artifacts: &StageArtifactSet,
-        contract: &FeatureContract,
-        builder_handoff: &BuilderHandoff,
-        qa_report: &QaReport,
-        previous_session_id: Option<&str>,
-    ) -> Result<loopsmith_core::domain::WorkerResult> {
-        self.default
-            .repair(
-                context,
-                feature,
-                artifacts,
-                contract,
-                builder_handoff,
-                qa_report,
-                previous_session_id,
-            )
-            .await
-    }
-}
-
-fn build_worker_from_planner_config(
-    config: &PlannerWorkerConfig,
-) -> Result<Box<dyn WorkerAdapter>> {
-    build_worker_from_selection(&config.selection)
-}
-
-fn build_worker_from_selection(selection: &WorkerSelection) -> Result<Box<dyn WorkerAdapter>> {
-    match selection {
-        WorkerSelection::CodexCli { codex } => {
-            verify_worker_binary(&codex.binary, "codex", "npm install -g @openai/codex")?;
-            Ok(Box::new(CodexCliWorker::new(codex.clone())))
-        }
-        WorkerSelection::ClaudeCli { claude } => {
-            verify_worker_binary(
-                &claude.binary,
-                "claude",
-                "npm install -g @anthropic-ai/claude-code",
-            )?;
-            Ok(Box::new(ClaudeCliWorker::new(claude.clone())))
-        }
-        WorkerSelection::GeminiCli { gemini } => {
-            verify_worker_binary(
-                &gemini.binary,
-                "gemini",
-                "npm install -g @anthropic-ai/gemini-cli",
-            )?;
-            Ok(Box::new(GeminiCliWorker::new(gemini.clone())))
-        }
-        WorkerSelection::Simulated { simulation } => {
-            Ok(Box::new(SimulatedWorker::new(simulation.clone())))
-        }
-    }
-}
-
-fn verify_worker_binary(binary: &str, name: &str, install_hint: &str) -> Result<()> {
-    if let Some(diagnostic) = loopsmith_core::shell_env::check_worker_binary(binary) {
-        bail!(
-            "{name} CLI: {diagnostic}\n\n\
-             Troubleshooting:\n\
-             1. Install {name} CLI: {install_hint}\n\
-             2. Or specify the full path in your config file:\n\
-                [worker.{name}]\n\
-                binary = \"/full/path/to/{binary}\"\n\
-             3. Verify it is accessible: which {binary}"
-        );
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1202,6 +1050,8 @@ commands = []
         assert!(config.prompts.discovery.exists());
         assert!(config.schemas.workspace_profile.exists());
         assert!(payload.profile_summary.is_some());
+        assert!(payload.overview.source_file_count > 0);
+        assert!(!payload.overview.key_concepts.is_empty());
         assert!(payload.status.last_refresh_error.is_none());
         assert!(!payload.status.used_fallback_profile);
         assert_eq!(payload.status.current_phase, WorkspaceDiscoveryPhase::Ready);

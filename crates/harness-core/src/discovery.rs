@@ -214,6 +214,66 @@ pub struct WorkspaceDiscoveryPayload {
     pub status: WorkspaceDiscoveryStatus,
     #[serde(default)]
     pub profile_summary: Option<String>,
+    #[serde(default)]
+    pub overview: WorkspaceDiscoveryOverview,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct WorkspaceDiscoveryOverview {
+    #[serde(default)]
+    pub source_file_count: usize,
+    #[serde(default)]
+    pub repository_count: usize,
+    #[serde(default)]
+    pub dependency_relationship_count: usize,
+    #[serde(default)]
+    pub layer_count: usize,
+    #[serde(default)]
+    pub api_contract_count: usize,
+    #[serde(default)]
+    pub user_journey_count: usize,
+    #[serde(default)]
+    pub e2e_test_case_count: usize,
+    #[serde(default)]
+    pub auth_surface_count: usize,
+    #[serde(default)]
+    pub coding_convention_count: usize,
+    #[serde(default)]
+    pub build_command_count: usize,
+    #[serde(default)]
+    pub test_command_count: usize,
+    #[serde(default)]
+    pub dev_command_count: usize,
+    #[serde(default)]
+    pub tech_stack: Vec<String>,
+    #[serde(default)]
+    pub key_concepts: Vec<String>,
+    #[serde(default)]
+    pub repositories: Vec<String>,
+    #[serde(default)]
+    pub layering_summary: Option<String>,
+    #[serde(default)]
+    pub layering_rules: Vec<String>,
+    #[serde(default)]
+    pub layering_ambiguities: Vec<String>,
+    #[serde(default)]
+    pub api_contracts: Vec<String>,
+    #[serde(default)]
+    pub user_journeys: Vec<String>,
+    #[serde(default)]
+    pub e2e_test_cases: Vec<String>,
+    #[serde(default)]
+    pub auth_surfaces: Vec<String>,
+    #[serde(default)]
+    pub coding_conventions: Vec<String>,
+    #[serde(default)]
+    pub build_commands: Vec<String>,
+    #[serde(default)]
+    pub test_commands: Vec<String>,
+    #[serde(default)]
+    pub dev_commands: Vec<String>,
+    #[serde(default)]
+    pub risks: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -279,6 +339,10 @@ impl WorkspaceDiscoveryStore {
         read_json_if_exists(&self.profile_path())
     }
 
+    pub fn load_scan(&self) -> Result<Option<WorkspaceDiscoveryScan>> {
+        read_json_if_exists(&self.scan_path())
+    }
+
     pub fn load_status(&self) -> Result<Option<WorkspaceDiscoveryStatus>> {
         read_json_if_exists(&self.status_path())
     }
@@ -287,10 +351,13 @@ impl WorkspaceDiscoveryStore {
         let Some(status) = self.load_status()? else {
             return Ok(None);
         };
-        let profile_summary = self.load_profile()?.map(|profile| profile.summary);
+        let scan = self.load_scan()?;
+        let profile = self.load_profile()?;
+        let profile_summary = profile.as_ref().map(|profile| profile.summary.clone());
         Ok(Some(WorkspaceDiscoveryPayload {
             status,
             profile_summary,
+            overview: WorkspaceDiscoveryOverview::from_sources(scan.as_ref(), profile.as_ref()),
         }))
     }
 
@@ -377,6 +444,109 @@ impl WorkspaceDiscoveryRequest {
             risks,
         }
     }
+}
+
+impl WorkspaceDiscoveryOverview {
+    pub fn from_sources(
+        scan: Option<&WorkspaceDiscoveryScan>,
+        profile: Option<&WorkspaceProfile>,
+    ) -> Self {
+        let layering = profile
+            .map(|item| &item.layering)
+            .or_else(|| scan.map(|item| &item.layering));
+        let commands = profile
+            .map(|item| &item.commands)
+            .or_else(|| scan.map(|item| &item.commands));
+
+        Self {
+            source_file_count: scan.map_or(0, |item| item.source_files.len()),
+            repository_count: profile.map_or_else(
+                || scan.map_or(0, |item| item.repositories.len()),
+                |item| item.repositories.len(),
+            ),
+            dependency_relationship_count: profile.map_or_else(
+                || scan.map_or(0, |item| item.dependency_relationships.len()),
+                |item| item.dependency_relationships.len(),
+            ),
+            layer_count: layering.map_or(0, |item| item.layers.len()),
+            api_contract_count: profile.map_or_else(
+                || scan.map_or(0, |item| item.api_contracts.len()),
+                |item| item.api_contracts.len(),
+            ),
+            user_journey_count: profile.map_or_else(
+                || scan.map_or(0, |item| item.user_journeys.len()),
+                |item| item.user_journeys.len(),
+            ),
+            e2e_test_case_count: profile.map_or_else(
+                || scan.map_or(0, |item| item.e2e_test_cases.len()),
+                |item| item.e2e_test_cases.len(),
+            ),
+            auth_surface_count: profile.map_or_else(
+                || scan.map_or(0, |item| item.auth.len()),
+                |item| item.auth.len(),
+            ),
+            coding_convention_count: profile.map_or_else(
+                || scan.map_or(0, |item| item.coding_conventions.len()),
+                |item| item.coding_conventions.len(),
+            ),
+            build_command_count: commands.map_or(0, |item| item.build.len()),
+            test_command_count: commands.map_or(0, |item| item.test.len()),
+            dev_command_count: commands.map_or(0, |item| item.dev.len()),
+            tech_stack: profile.map_or_else(
+                || scan.map_or_else(Vec::new, |item| fact_titles(&item.tech_stack)),
+                |item| fact_titles(&item.tech_stack),
+            ),
+            key_concepts: profile.map_or_else(Vec::new, |item| item.key_concepts.clone()),
+            repositories: profile.map_or_else(
+                || scan.map_or_else(Vec::new, |item| repository_summaries(&item.repositories)),
+                |item| repository_summaries(&item.repositories),
+            ),
+            layering_summary: layering.map(|item| item.summary.clone()),
+            layering_rules: layering
+                .map_or_else(Vec::new, |item| item.allowed_dependency_directions.clone()),
+            layering_ambiguities: layering
+                .map_or_else(Vec::new, |item| item.unresolved_ambiguities.clone()),
+            api_contracts: profile.map_or_else(
+                || scan.map_or_else(Vec::new, |item| fact_titles(&item.api_contracts)),
+                |item| fact_titles(&item.api_contracts),
+            ),
+            user_journeys: profile.map_or_else(
+                || scan.map_or_else(Vec::new, |item| fact_titles(&item.user_journeys)),
+                |item| fact_titles(&item.user_journeys),
+            ),
+            e2e_test_cases: profile.map_or_else(
+                || scan.map_or_else(Vec::new, |item| fact_titles(&item.e2e_test_cases)),
+                |item| fact_titles(&item.e2e_test_cases),
+            ),
+            auth_surfaces: profile.map_or_else(
+                || scan.map_or_else(Vec::new, |item| fact_titles(&item.auth)),
+                |item| fact_titles(&item.auth),
+            ),
+            coding_conventions: profile.map_or_else(
+                || scan.map_or_else(Vec::new, |item| fact_titles(&item.coding_conventions)),
+                |item| fact_titles(&item.coding_conventions),
+            ),
+            build_commands: commands.map_or_else(Vec::new, |item| command_lines(&item.build)),
+            test_commands: commands.map_or_else(Vec::new, |item| command_lines(&item.test)),
+            dev_commands: commands.map_or_else(Vec::new, |item| command_lines(&item.dev)),
+            risks: profile.map_or_else(Vec::new, |item| item.risks.clone()),
+        }
+    }
+}
+
+fn fact_titles(items: &[DiscoveryFact]) -> Vec<String> {
+    items.iter().map(|item| item.title.clone()).collect()
+}
+
+fn repository_summaries(items: &[RepositoryProfile]) -> Vec<String> {
+    items
+        .iter()
+        .map(|item| format!("{} ({})", item.name, item.root.display()))
+        .collect()
+}
+
+fn command_lines(items: &[DetectedCommand]) -> Vec<String> {
+    items.iter().map(|item| item.command.join(" ")).collect()
 }
 
 impl WorkspaceProfile {
@@ -519,6 +689,7 @@ impl WorkspaceProfile {
 pub fn scan_workspace(workspace_path: &Path) -> Result<WorkspaceDiscoveryScan> {
     let workspace_path = normalize_path(workspace_path.to_path_buf());
     let scanned_at = Utc::now();
+    let gitignore_matcher = GitignoreMatcher::load(&workspace_path)?;
     let mut source_files = Vec::new();
     let mut tech_stack = Vec::new();
     let mut repositories = Vec::new();
@@ -536,7 +707,12 @@ pub fn scan_workspace(workspace_path: &Path) -> Result<WorkspaceDiscoveryScan> {
     for entry in WalkDir::new(&workspace_path)
         .follow_links(false)
         .into_iter()
-        .filter_entry(|entry| !should_skip_entry(entry))
+        .filter_entry(|entry| {
+            let rel = relative_to_workspace(&workspace_path, entry.path());
+            !should_skip_entry(entry)
+                && !should_ignore_source_path(&rel, entry.file_type().is_dir())
+                && !gitignore_matcher.is_ignored(&rel, entry.file_type().is_dir())
+        })
     {
         let entry = entry.with_context(|| {
             format!(
@@ -553,11 +729,11 @@ pub fn scan_workspace(workspace_path: &Path) -> Result<WorkspaceDiscoveryScan> {
             continue;
         }
 
-        if !is_candidate_file(path) {
+        let rel = relative_to_workspace(&workspace_path, path);
+        if should_ignore_source_path(&rel, false) || !is_candidate_file(path) {
             continue;
         }
 
-        let rel = relative_to_workspace(&workspace_path, path);
         let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
         let content_hash = hash_bytes(&bytes);
         source_files.push(DiscoverySourceFile {
@@ -682,6 +858,115 @@ fn should_skip_entry(entry: &DirEntry) -> bool {
     false
 }
 
+#[derive(Debug, Clone, Default)]
+struct GitignoreMatcher {
+    rule_sets: Vec<GitignoreRuleSet>,
+}
+
+#[derive(Debug, Clone)]
+struct GitignoreRuleSet {
+    base: PathBuf,
+    rules: Vec<GitignoreRule>,
+}
+
+#[derive(Debug, Clone)]
+struct GitignoreRule {
+    pattern: String,
+    anchored: bool,
+    directory_only: bool,
+    negated: bool,
+    has_slash: bool,
+}
+
+impl GitignoreMatcher {
+    fn load(workspace_path: &Path) -> Result<Self> {
+        let mut rule_sets = Vec::new();
+
+        for entry in WalkDir::new(workspace_path)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|entry| !should_skip_entry(entry))
+        {
+            let entry = entry.with_context(|| {
+                format!(
+                    "failed while loading gitignore rules from {}",
+                    workspace_path.display()
+                )
+            })?;
+            if entry.file_type().is_dir() {
+                continue;
+            }
+            if entry.file_name().to_str() != Some(".gitignore") {
+                continue;
+            }
+
+            let rel = relative_to_workspace(workspace_path, entry.path());
+            let rules = parse_gitignore_rules(
+                &fs::read_to_string(entry.path())
+                    .with_context(|| format!("failed to read {}", entry.path().display()))?,
+            );
+            if rules.is_empty() {
+                continue;
+            }
+
+            rule_sets.push(GitignoreRuleSet {
+                base: rel.parent().map(Path::to_path_buf).unwrap_or_default(),
+                rules,
+            });
+        }
+
+        rule_sets.sort_by(|left, right| {
+            path_depth(&left.base)
+                .cmp(&path_depth(&right.base))
+                .then_with(|| left.base.cmp(&right.base))
+        });
+
+        Ok(Self { rule_sets })
+    }
+
+    fn is_ignored(&self, rel: &Path, is_dir: bool) -> bool {
+        if rel.as_os_str().is_empty() {
+            return false;
+        }
+
+        let mut ignored = false;
+        for rule_set in &self.rule_sets {
+            let Some(rel_from_base) = strip_relative_prefix(rel, &rule_set.base) else {
+                continue;
+            };
+
+            for rule in &rule_set.rules {
+                if rule.matches(rel_from_base, is_dir) {
+                    ignored = !rule.negated;
+                }
+            }
+        }
+
+        ignored
+    }
+}
+
+impl GitignoreRule {
+    fn matches(&self, rel: &Path, is_dir: bool) -> bool {
+        if self.directory_only && !is_dir {
+            return false;
+        }
+
+        let rel_text = normalize_relative_path(rel);
+        if rel_text.is_empty() {
+            return false;
+        }
+
+        if self.anchored || self.has_slash {
+            wildcard_match(&self.pattern, &rel_text)
+        } else {
+            rel.components().any(|component| {
+                wildcard_match(&self.pattern, &component.as_os_str().to_string_lossy())
+            })
+        }
+    }
+}
+
 fn is_candidate_file(path: &Path) -> bool {
     let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
@@ -733,6 +1018,149 @@ fn is_candidate_file(path: &Path) -> bool {
         || lower == "index.tsx"
         || lower == "app.ts"
         || lower == "app.tsx"
+}
+
+fn should_ignore_source_path(rel: &Path, is_dir: bool) -> bool {
+    if rel
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .any(|component| {
+            matches!(
+                component.to_ascii_lowercase().as_str(),
+                "dictionary" | "dictionaries"
+            )
+        })
+    {
+        return true;
+    }
+
+    let Some(name) = rel.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let lower = name.to_ascii_lowercase();
+    if lower == ".gitignore" {
+        return true;
+    }
+    if is_dir {
+        return false;
+    }
+
+    let stem = rel
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(|stem| stem.to_ascii_lowercase());
+    let extension = rel
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase());
+
+    matches!(stem.as_deref(), Some("dictionary" | "dictionaries"))
+        || matches!(extension.as_deref(), Some("dic" | "dict" | "dictionary"))
+}
+
+fn parse_gitignore_rules(text: &str) -> Vec<GitignoreRule> {
+    text.lines()
+        .filter_map(parse_gitignore_rule)
+        .collect::<Vec<_>>()
+}
+
+fn parse_gitignore_rule(line: &str) -> Option<GitignoreRule> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut raw = trimmed.to_string();
+    if let Some(rest) = raw.strip_prefix("\\#") {
+        raw = format!("#{rest}");
+    } else if raw.starts_with('#') {
+        return None;
+    }
+
+    let negated = if let Some(rest) = raw.strip_prefix("\\!") {
+        raw = format!("!{rest}");
+        false
+    } else if let Some(rest) = raw.strip_prefix('!') {
+        raw = rest.to_string();
+        true
+    } else {
+        false
+    };
+
+    let directory_only = raw.ends_with('/');
+    if directory_only {
+        raw.pop();
+    }
+
+    let anchored = raw.starts_with('/');
+    if anchored {
+        raw.remove(0);
+    }
+
+    let pattern = raw.trim();
+    if pattern.is_empty() {
+        return None;
+    }
+
+    Some(GitignoreRule {
+        has_slash: pattern.contains('/'),
+        pattern: pattern.to_string(),
+        anchored,
+        directory_only,
+        negated,
+    })
+}
+
+fn strip_relative_prefix<'a>(path: &'a Path, prefix: &Path) -> Option<&'a Path> {
+    if prefix.as_os_str().is_empty() {
+        Some(path)
+    } else {
+        path.strip_prefix(prefix).ok()
+    }
+}
+
+fn normalize_relative_path(rel: &Path) -> String {
+    rel.components()
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn path_depth(path: &Path) -> usize {
+    path.components().count()
+}
+
+fn wildcard_match(pattern: &str, text: &str) -> bool {
+    let pattern = pattern.as_bytes();
+    let text = text.as_bytes();
+    let (mut pattern_index, mut text_index) = (0usize, 0usize);
+    let mut star_index = None;
+    let mut match_index = 0usize;
+
+    while text_index < text.len() {
+        if pattern_index < pattern.len()
+            && (pattern[pattern_index] == b'?' || pattern[pattern_index] == text[text_index])
+        {
+            pattern_index += 1;
+            text_index += 1;
+        } else if pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
+            star_index = Some(pattern_index);
+            match_index = text_index;
+            pattern_index += 1;
+        } else if let Some(star) = star_index {
+            pattern_index = star + 1;
+            match_index += 1;
+            text_index = match_index;
+        } else {
+            return false;
+        }
+    }
+
+    while pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
+        pattern_index += 1;
+    }
+
+    pattern_index == pattern.len()
 }
 
 fn relative_to_workspace(workspace: &Path, path: &Path) -> PathBuf {
@@ -1390,6 +1818,7 @@ fn hash_json<T: Serialize>(value: &T) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::{CommandCatalog, WorkspaceDiscoveryRequest, profile_fingerprint, scan_workspace};
+    use crate::worker::{DiscoveryContext, render_discovery_prompt};
     use std::fs;
     use tempfile::tempdir;
 
@@ -1483,5 +1912,178 @@ mod tests {
         assert!(!fingerprint.is_empty());
         assert!(!profile.summary.is_empty());
         assert!(matches!(profile.commands, CommandCatalog { .. }));
+    }
+
+    #[test]
+    fn scanner_excludes_gitignore_and_dictionary_artifacts_from_discovery_inputs() {
+        let temp = tempdir().expect("tempdir");
+        fs::create_dir_all(temp.path().join("docs")).expect("docs dir");
+        fs::create_dir_all(temp.path().join("config")).expect("config dir");
+        fs::create_dir_all(temp.path().join("docs/dictionaries")).expect("dictionaries dir");
+        fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("write cargo");
+        fs::write(temp.path().join("README.md"), "# Fixture\n").expect("write readme");
+        fs::write(temp.path().join(".gitignore"), "target\n").expect("write root gitignore");
+        fs::write(temp.path().join("docs/.gitignore"), "generated/\n")
+            .expect("write nested gitignore");
+        fs::write(
+            temp.path().join("docs/dictionary.md"),
+            "# Domain dictionary\nterm: value\n",
+        )
+        .expect("write markdown dictionary");
+        fs::write(
+            temp.path().join("config/dictionaries.yml"),
+            "terms:\n  - widget\n",
+        )
+        .expect("write yaml dictionary");
+        fs::write(
+            temp.path().join("docs/dictionaries/terms.yml"),
+            "terms:\n  - gadget\n",
+        )
+        .expect("write dictionary directory file");
+
+        let scan = scan_workspace(temp.path()).expect("scan");
+        let source_paths = scan
+            .source_files
+            .iter()
+            .map(|file| file.path.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert!(source_paths.iter().any(|path| path == "Cargo.toml"));
+        assert!(source_paths.iter().any(|path| path == "README.md"));
+        assert!(!source_paths.iter().any(|path| path == ".gitignore"));
+        assert!(!source_paths.iter().any(|path| path == "docs/.gitignore"));
+        assert!(!source_paths.iter().any(|path| path == "docs/dictionary.md"));
+        assert!(
+            !source_paths
+                .iter()
+                .any(|path| path == "config/dictionaries.yml")
+        );
+        assert!(
+            !source_paths
+                .iter()
+                .any(|path| path == "docs/dictionaries/terms.yml")
+        );
+
+        let request = WorkspaceDiscoveryRequest {
+            scan,
+            previous_profile: None,
+        };
+        let profile = request.synthesize_profile();
+        let request_json =
+            serde_json::to_string_pretty(&request).expect("serialize discovery request");
+        let profile_json =
+            serde_json::to_string_pretty(&profile).expect("serialize workspace profile");
+        let prompt_template = temp.path().join("discovery.md");
+        let schema_path = temp.path().join("workspace-profile.schema.json");
+        fs::write(&prompt_template, "discovery\n").expect("write prompt template");
+        fs::write(&schema_path, "{}\n").expect("write schema");
+        let prompt = render_discovery_prompt(
+            &DiscoveryContext {
+                workspace: temp.path().to_path_buf(),
+                discovery_prompt: prompt_template,
+                workspace_profile_schema: schema_path.clone(),
+            },
+            &schema_path,
+            &request,
+        )
+        .expect("render prompt");
+
+        assert!(request_json.contains("Cargo.toml"));
+        assert!(prompt.contains("Cargo.toml"));
+        for ignored_path in [
+            ".gitignore",
+            "docs/.gitignore",
+            "docs/dictionary.md",
+            "config/dictionaries.yml",
+            "docs/dictionaries/terms.yml",
+        ] {
+            assert!(!request_json.contains(ignored_path));
+            assert!(!profile_json.contains(ignored_path));
+            assert!(!prompt.contains(ignored_path));
+        }
+    }
+
+    #[test]
+    fn scanner_respects_gitignore_patterns_for_files_and_directories() {
+        let temp = tempdir().expect("tempdir");
+        fs::create_dir_all(temp.path().join("src")).expect("src dir");
+        fs::create_dir_all(temp.path().join("ignored-dir")).expect("ignored dir");
+        fs::create_dir_all(temp.path().join("docs/drafts")).expect("drafts dir");
+        fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("write cargo");
+        fs::write(temp.path().join("src/lib.rs"), "pub fn keep() {}\n").expect("write lib");
+        fs::write(temp.path().join("notes.snapshot"), "ignored snapshot\n")
+            .expect("write ignored snapshot");
+        fs::write(
+            temp.path().join("ignored-dir/package.json"),
+            r#"{"name":"ignored"}"#,
+        )
+        .expect("write ignored package");
+        fs::write(temp.path().join("docs/guide.md"), "# Keep\n").expect("write guide");
+        fs::write(temp.path().join("docs/spec.tmp"), "temporary\n").expect("write tmp");
+        fs::write(temp.path().join("docs/drafts/plan.md"), "# Draft\n").expect("write draft");
+        fs::write(temp.path().join(".gitignore"), "ignored-dir/\n*.snapshot\n")
+            .expect("write root gitignore");
+        fs::write(temp.path().join("docs/.gitignore"), "drafts/\n*.tmp\n")
+            .expect("write nested gitignore");
+
+        let scan = scan_workspace(temp.path()).expect("scan");
+        let source_paths = scan
+            .source_files
+            .iter()
+            .map(|file| file.path.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert!(source_paths.iter().any(|path| path == "Cargo.toml"));
+        assert!(source_paths.iter().any(|path| path == "src/lib.rs"));
+        assert!(source_paths.iter().any(|path| path == "docs/guide.md"));
+        for ignored_path in [
+            "notes.snapshot",
+            "ignored-dir/package.json",
+            "docs/spec.tmp",
+            "docs/drafts/plan.md",
+        ] {
+            assert!(!source_paths.iter().any(|path| path == ignored_path));
+        }
+
+        let request = WorkspaceDiscoveryRequest {
+            scan,
+            previous_profile: None,
+        };
+        let prompt_template = temp.path().join("discovery.md");
+        let schema_path = temp.path().join("workspace-profile.schema.json");
+        fs::write(&prompt_template, "discovery\n").expect("write prompt template");
+        fs::write(&schema_path, "{}\n").expect("write schema");
+        let request_json =
+            serde_json::to_string_pretty(&request).expect("serialize discovery request");
+        let prompt = render_discovery_prompt(
+            &DiscoveryContext {
+                workspace: temp.path().to_path_buf(),
+                discovery_prompt: prompt_template,
+                workspace_profile_schema: schema_path.clone(),
+            },
+            &schema_path,
+            &request,
+        )
+        .expect("render prompt");
+
+        assert!(request_json.contains("docs/guide.md"));
+        assert!(prompt.contains("docs/guide.md"));
+        for ignored_path in [
+            "notes.snapshot",
+            "ignored-dir/package.json",
+            "docs/spec.tmp",
+            "docs/drafts/plan.md",
+        ] {
+            assert!(!request_json.contains(ignored_path));
+            assert!(!prompt.contains(ignored_path));
+        }
     }
 }

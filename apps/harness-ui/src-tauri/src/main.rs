@@ -8,10 +8,10 @@ use loopsmith_core::{
     paths::normalize_path,
     storage::{LoopSmithStore, WorkspaceRecord},
 };
-use loopsmith_ui::{
-    HarnessUiService, LaunchDraft, StageLogSseServer, WorkspaceRunSummary,
-    validate_run_artifact_path, validate_stage_stdout_log_path,
+use loopsmith_desktop_shell::{
+    StageLogSseServer, validate_run_artifact_path, validate_stage_stdout_log_path,
 };
+use loopsmith_orchestration::{HarnessUiService, LaunchDraft, WorkspaceRunSummary};
 use rfd::FileDialog;
 use serde::Serialize;
 use tauri::{Manager, State};

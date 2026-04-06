@@ -15,4 +15,5 @@ serde.workspace = true
 tauri = { version = "2", features = [] }
 tracing.workspace = true
 loopsmith-core = { path = "../../../crates/harness-core" }
-loopsmith-ui = { path = "../../../crates/harness-ui" }
+loopsmith-desktop-shell = { path = "../../../crates/harness-desktop-shell" }
+loopsmith-orchestration = { path = "../../../crates/loopsmith-orchestration" }

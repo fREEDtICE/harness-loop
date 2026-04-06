@@ -2,8 +2,10 @@
 members = [
     ".",
     "apps/harness-ui/src-tauri",
+    "crates/harness-desktop-shell",
     "crates/harness-core",
-    "crates/harness-ui",
+    "crates/loopsmith-orchestration",
+    "crates/harness-worker-factory",
     "crates/harness-worker-claude",
     "crates/harness-worker-codex",
     "crates/harness-worker-gemini",
@@ -53,11 +55,7 @@ async-trait.workspace = true
 clap.workspace = true
 tokio.workspace = true
 loopsmith-core = { path = "crates/harness-core" }
-loopsmith-ui = { path = "crates/harness-ui" }
-loopsmith-worker-claude = { path = "crates/harness-worker-claude" }
-loopsmith-worker-codex = { path = "crates/harness-worker-codex" }
-loopsmith-worker-gemini = { path = "crates/harness-worker-gemini" }
-loopsmith-worker-simulated = { path = "crates/harness-worker-simulated" }
+loopsmith-orchestration = { path = "crates/loopsmith-orchestration" }
 
 [dev-dependencies]
 serde_json.workspace = true

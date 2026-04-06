@@ -2140,6 +2140,94 @@ textarea:focus {
   gap: 4px;
 }
 
+.discovery-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+}
+
+.discovery-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #30363d;
+  background: #0d1117;
+}
+
+.discovery-metric-value {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: #f0f6fc;
+}
+
+.discovery-metric-label {
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #8b949e;
+}
+
+.discovery-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.discovery-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid #30363d;
+  background: #0d1117;
+  min-height: 96px;
+}
+
+.discovery-card-wide {
+  min-height: auto;
+}
+
+.discovery-card-title {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #c9d1d9;
+}
+
+.discovery-card-copy {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: #8b949e;
+}
+
+.discovery-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.discovery-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 5px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(56, 139, 253, 0.22);
+  background: rgba(56, 139, 253, 0.09);
+  color: #c9d1d9;
+  font-size: 0.76rem;
+  line-height: 1.35;
+}
+
+.discovery-chip-code {
+  font-family: "JetBrains Mono", "SF Mono", Consolas, monospace;
+  border-color: rgba(163, 113, 247, 0.28);
+  background: rgba(163, 113, 247, 0.11);
+}
+
 .cfg-label {
   font-size: 0.78rem;
   color: #8b949e;

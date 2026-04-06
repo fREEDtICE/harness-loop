@@ -47,6 +47,42 @@ fn simulated_cli_discovery_writes_workspace_profile_before_run_loop() -> Result<
     Ok(())
 }
 
+#[test]
+fn simulated_cli_discover_command_refreshes_workspace_profile_without_creating_a_run()
+-> Result<(), Box<dyn Error>> {
+    let fixture = DiscoveryFixture::new()?;
+    let output = fixture.discover()?;
+    fixture.assert_success(&output)?;
+
+    let discovery_root = fixture.workspace_dir.join(".loopsmith/discovery");
+    assert!(discovery_root.join("scan.json").exists());
+    assert!(discovery_root.join("profile.json").exists());
+    assert!(discovery_root.join("status.json").exists());
+    assert!(fixture.run_roots()?.is_empty());
+
+    let status = read_json(&discovery_root.join("status.json"))?;
+    let profile = read_json(&discovery_root.join("profile.json"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert_eq!(status["current_phase"], "ready");
+    assert_eq!(status["last_refresh_error"], Value::Null);
+    assert_eq!(status["used_fallback_profile"], Value::Bool(false));
+    assert!(
+        profile["summary"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Workspace profile derived from")
+    );
+    assert!(stdout.contains("phase: ready"));
+    assert!(stdout.contains("profile:"));
+    assert!(stdout.contains("status:"));
+    assert!(stdout.contains("summary:"));
+    assert!(stdout.contains("source_files:"));
+    assert!(!stdout.contains("run_root:"));
+
+    Ok(())
+}
+
 struct DiscoveryFixture {
     _temp: TempDir,
     project_root: PathBuf,
@@ -194,7 +230,30 @@ commands = [
             .output()?)
     }
 
+    fn discover(&self) -> Result<Output, Box<dyn Error>> {
+        Ok(Command::new(env!("CARGO_BIN_EXE_loopsmith"))
+            .current_dir(&self.project_root)
+            .env("LOOPSMITH_HOME", &self.loopsmith_home)
+            .arg("discover")
+            .arg("--config")
+            .arg(&self.config_path)
+            .arg("--workspace")
+            .arg(&self.workspace_dir)
+            .output()?)
+    }
+
     fn single_run_root(&self) -> Result<PathBuf, Box<dyn Error>> {
+        let mut run_roots = self.run_roots()?;
+        assert_eq!(
+            run_roots.len(),
+            1,
+            "expected exactly one run root under {}",
+            self.runs_dir.display()
+        );
+        Ok(run_roots.remove(0))
+    }
+
+    fn run_roots(&self) -> Result<Vec<PathBuf>, Box<dyn Error>> {
         let mut run_roots = fs::read_dir(&self.runs_dir)?
             .filter_map(|entry| entry.ok())
             .filter_map(|entry| {
@@ -206,13 +265,7 @@ commands = [
             })
             .collect::<Vec<_>>();
         run_roots.sort();
-        assert_eq!(
-            run_roots.len(),
-            1,
-            "expected exactly one run root under {}",
-            self.runs_dir.display()
-        );
-        Ok(run_roots.remove(0))
+        Ok(run_roots)
     }
 
     fn assert_success(&self, output: &Output) -> Result<(), Box<dyn Error>> {

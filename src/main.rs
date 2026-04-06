@@ -2,8 +2,14 @@ use std::{fs, path::Path, path::PathBuf, process};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use loopsmith_core::{domain::RunState, home, logging, paths::normalize_path, setup, shell_env};
-use loopsmith_ui::service::{HarnessUiService, LaunchDraft};
+use loopsmith_core::{
+    discovery::{WorkspaceDiscoveryPayload, WorkspaceDiscoveryPhase, WorkspaceProfileSelection},
+    domain::RunState,
+    home, logging,
+    paths::normalize_path,
+    setup, shell_env,
+};
+use loopsmith_orchestration::service::{HarnessUiService, LaunchDraft};
 
 #[derive(Debug, Parser)]
 #[command(name = "loopsmith")]
@@ -43,6 +49,12 @@ enum Command {
         config: Option<PathBuf>,
         #[arg(long)]
         run_root: PathBuf,
+    },
+    Discover {
+        #[arg(long)]
+        config: Option<PathBuf>,
+        #[arg(long)]
+        workspace: PathBuf,
     },
     Init {
         #[arg(long, help = "Overwrite existing workspace templates")]
@@ -88,6 +100,9 @@ fn ensure_ready_for_cli(command: &Command) -> Result<()> {
     match command {
         Command::Init { .. } => {}
         Command::Run {
+            config: Some(_), ..
+        }
+        | Command::Discover {
             config: Some(_), ..
         }
         | Command::Resume {
@@ -154,6 +169,15 @@ async fn run_command(command: Command) -> Result<()> {
             let state = service.inspect_run(config_path, run_root)?;
 
             print_run_state(&state);
+        }
+        Command::Discover { config, workspace } => {
+            let config_path = resolve_config(config)?;
+            let workspace = absolutize(&workspace)?;
+            let service = HarnessUiService;
+            let selection = service.discover_workspace(&config_path, &workspace).await?;
+            let payload = service.load_discovery_payload(&workspace)?;
+
+            print_discovery_selection(&selection, payload.as_ref());
         }
     }
 
@@ -244,6 +268,64 @@ fn print_run_state(state: &RunState) {
                 stage.artifact.display()
             );
         }
+    }
+}
+
+fn print_discovery_selection(
+    selection: &WorkspaceProfileSelection,
+    payload: Option<&WorkspaceDiscoveryPayload>,
+) {
+    println!("workspace: {}", selection.profile.workspace_path.display());
+    println!(
+        "discovery_root: {}",
+        selection
+            .canonical_profile_path
+            .parent()
+            .map_or_else(|| "-".to_string(), |path| path.display().to_string())
+    );
+    println!("scan: {}", selection.scan_path.display());
+    println!("profile: {}", selection.canonical_profile_path.display());
+    println!("status: {}", selection.status_path.display());
+    println!(
+        "phase: {}",
+        payload
+            .map(|item| discovery_phase_str(item.status.current_phase))
+            .unwrap_or("unknown")
+    );
+    println!("workspace_fingerprint: {}", selection.workspace_fingerprint);
+    println!("profile_fingerprint: {}", selection.profile_fingerprint);
+    println!(
+        "last_scanned_at: {}",
+        selection.last_scanned_at.to_rfc3339()
+    );
+    println!(
+        "last_refreshed_at: {}",
+        selection.last_refreshed_at.to_rfc3339()
+    );
+    println!("used_fallback_profile: {}", selection.used_fallback_profile);
+    println!(
+        "refresh_error: {}",
+        selection.refresh_error.as_deref().unwrap_or("-")
+    );
+    println!("summary: {}", selection.profile.summary);
+
+    if let Some(payload) = payload {
+        println!("source_files: {}", payload.overview.source_file_count);
+        println!("repositories: {}", payload.overview.repository_count);
+        println!("api_contracts: {}", payload.overview.api_contract_count);
+        println!("layer_rules: {}", payload.overview.layering_rules.len());
+    }
+}
+
+fn discovery_phase_str(phase: WorkspaceDiscoveryPhase) -> &'static str {
+    match phase {
+        WorkspaceDiscoveryPhase::Idle => "idle",
+        WorkspaceDiscoveryPhase::Scanning => "scanning",
+        WorkspaceDiscoveryPhase::ReusingCachedProfile => "reusing_cached_profile",
+        WorkspaceDiscoveryPhase::Polishing => "polishing",
+        WorkspaceDiscoveryPhase::UsingFallbackProfile => "using_fallback_profile",
+        WorkspaceDiscoveryPhase::Ready => "ready",
+        WorkspaceDiscoveryPhase::Failed => "failed",
     }
 }
 

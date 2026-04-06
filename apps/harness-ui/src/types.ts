@@ -120,6 +120,37 @@ export type WorkspaceDiscoveryPhase =
 export type WorkspaceDiscoveryPayload = {
   status: WorkspaceDiscoveryStatus;
   profile_summary: string | null;
+  overview: WorkspaceDiscoveryOverview;
+};
+
+export type WorkspaceDiscoveryOverview = {
+  source_file_count: number;
+  repository_count: number;
+  dependency_relationship_count: number;
+  layer_count: number;
+  api_contract_count: number;
+  user_journey_count: number;
+  e2e_test_case_count: number;
+  auth_surface_count: number;
+  coding_convention_count: number;
+  build_command_count: number;
+  test_command_count: number;
+  dev_command_count: number;
+  tech_stack: string[];
+  key_concepts: string[];
+  repositories: string[];
+  layering_summary: string | null;
+  layering_rules: string[];
+  layering_ambiguities: string[];
+  api_contracts: string[];
+  user_journeys: string[];
+  e2e_test_cases: string[];
+  auth_surfaces: string[];
+  coding_conventions: string[];
+  build_commands: string[];
+  test_commands: string[];
+  dev_commands: string[];
+  risks: string[];
 };
 
 export type WorkspacePayload = {

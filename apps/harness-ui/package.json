@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420",
     "build": "tsc && vite build",
+    "test:discovery-ui-contract": "node --test scripts/discovery-ui-contract.test.mjs",
     "test:pending-launch-contract": "node --test scripts/pending-launch-contract.test.mjs",
     "test:run-detail-streaming": "node --test scripts/run-detail-log-streaming.test.mjs",
     "test:run-selection-freshness": "node --test scripts/run-selection-freshness.test.mjs",

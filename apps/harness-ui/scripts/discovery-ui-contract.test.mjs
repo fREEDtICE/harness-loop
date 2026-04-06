@@ -119,6 +119,35 @@ function discoveryFixture(phase) {
     status: base,
     profile_summary:
       phase === "failed" ? null : `Discovery summary for ${phase}`,
+    overview: {
+      source_file_count: 18,
+      repository_count: 2,
+      dependency_relationship_count: 3,
+      layer_count: 4,
+      api_contract_count: 2,
+      user_journey_count: 1,
+      e2e_test_case_count: 2,
+      auth_surface_count: 1,
+      coding_convention_count: 3,
+      build_command_count: 2,
+      test_command_count: 2,
+      dev_command_count: 1,
+      tech_stack: ["Rust", "React", "Tauri"],
+      key_concepts: ["Planner output drives the harness loop."],
+      repositories: ["loopsmith-orchestration (/tmp/workspace/crates/harness-ui)"],
+      layering_summary: "UI should route through the service boundary.",
+      layering_rules: ["ui -> service -> core"],
+      layering_ambiguities: phase === "failed" ? [] : ["infra ownership is inferred"],
+      api_contracts: ["planner-output.json", "builder-handoff.json"],
+      user_journeys: ["New run launch and resume flow"],
+      e2e_test_cases: ["run_smoke", "discovery_smoke"],
+      auth_surfaces: ["codex login status"],
+      coding_conventions: [".editorconfig", "AGENTS.md"],
+      build_commands: ["cargo build", "pnpm build"],
+      test_commands: ["cargo test", "pnpm test:pending-launch-contract"],
+      dev_commands: ["pnpm tauri dev"],
+      risks: phase === "failed" ? [] : ["Layering is partially inferred from file layout."],
+    },
   };
 }
 
@@ -181,5 +210,10 @@ test("shared discovery contract covers every current phase", () => {
     );
     assert.match(settingsMarkup, /\/tmp\/workspace\/\.loopsmith\/discovery\/scan\.json/);
     assert.match(settingsMarkup, /\/tmp\/workspace\/\.loopsmith\/discovery\/profile\.json/);
+    assert.match(settingsMarkup, /workspace-/);
+    assert.match(settingsMarkup, /18/);
+    assert.match(settingsMarkup, /Planner output drives the harness loop\./);
+    assert.match(settingsMarkup, /ui -&gt; service -&gt; core/);
+    assert.match(settingsMarkup, /cargo build/);
   }
 });

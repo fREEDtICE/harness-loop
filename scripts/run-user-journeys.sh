@@ -43,6 +43,8 @@ cargo test --test run_smoke -- --nocapture
 cargo test --test discovery_smoke -- --nocapture
 
 if command -v pnpm >/dev/null 2>&1 && [ -d "$REPO_ROOT/apps/harness-ui/node_modules" ]; then
+  echo "==> Running frontend discovery UI contracts"
+  pnpm --dir "$REPO_ROOT/apps/harness-ui" test:discovery-ui-contract
   echo "==> Running frontend pending-launch contracts"
   pnpm --dir "$REPO_ROOT/apps/harness-ui" test:pending-launch-contract
   echo "==> Running frontend run-detail streaming contracts"
