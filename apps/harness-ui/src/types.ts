@@ -101,7 +101,21 @@ export type WorkspaceDiscoveryStatus = {
   last_refreshed_at: string | null;
   last_refresh_error: string | null;
   used_fallback_profile: boolean;
+  current_phase: WorkspaceDiscoveryPhase;
 };
+
+export const WORKSPACE_DISCOVERY_PHASES = [
+  "idle",
+  "scanning",
+  "reusing_cached_profile",
+  "polishing",
+  "using_fallback_profile",
+  "ready",
+  "failed",
+] as const;
+
+export type WorkspaceDiscoveryPhase =
+  (typeof WORKSPACE_DISCOVERY_PHASES)[number];
 
 export type WorkspaceDiscoveryPayload = {
   status: WorkspaceDiscoveryStatus;

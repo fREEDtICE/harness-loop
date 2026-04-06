@@ -55,6 +55,22 @@
     "progress": "功能 {{current}}/{{total}} · {{stage}} 第 {{attempt}} 次",
     "summary": "{{total}} 个功能 · {{lifecycle}}"
   },
+  "discovery": {
+    "idle": "空闲",
+    "scanning": "正在扫描工作空间",
+    "reusingCachedProfile": "正在复用缓存的工作空间画像",
+    "polishing": "正在刷新工作空间画像",
+    "usingFallbackProfile": "正在使用回退工作空间画像",
+    "ready": "已就绪",
+    "failed": "失败",
+    "timelineIdle": "Discovery：空闲",
+    "timelineScanning": "Discovery：正在扫描工作空间",
+    "timelineReusingCachedProfile": "Discovery：正在复用缓存的工作空间画像",
+    "timelinePolishing": "Discovery：正在刷新工作空间画像",
+    "timelineUsingFallbackProfile": "Discovery：正在使用回退工作空间画像",
+    "timelineReady": "Discovery 已完成。正在启动运行。",
+    "timelineFailed": "Discovery 失败。"
+  },
   "run": {
     "live": "● 实时",
     "request": "需求",
@@ -125,6 +141,8 @@
     "builderSchema": "Builder Schema",
     "qaSchema": "QA Schema",
     "discovery": "Discovery",
+    "discoveryPhase": "Discovery 阶段",
+    "discoverySummary": "画像摘要",
     "profilePath": "Profile Path",
     "scanPath": "Scan Path",
     "lastRefresh": "Last Refresh",

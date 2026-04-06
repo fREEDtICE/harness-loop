@@ -12,3 +12,4 @@ apps/harness-ui/src-tauri/target
 .DS_Store
 dist/
 *.log
+apps/harness-ui/scripts/.compiled/

@@ -60,7 +60,7 @@ function RequestSection({ requestFile }: { requestFile: string }) {
 
   useEffect(() => {
     if (!expanded || content !== null || !requestFile) return;
-    invoke<string>("read_stage_log", { path: requestFile })
+    invoke<string>("read_run_artifact", { path: requestFile })
       .then(setContent)
       .catch(() => setContent(""));
   }, [expanded, content, requestFile]);
@@ -131,7 +131,7 @@ function useArtifact<T>(path: string | undefined): T | null {
       setData(null);
     }
     if (!path) return;
-    invoke<string>("read_stage_log", { path }).then(
+    invoke<string>("read_run_artifact", { path }).then(
       (raw) => {
         if (!raw) return;
         try { setData(JSON.parse(raw) as T); } catch { /* ignore */ }

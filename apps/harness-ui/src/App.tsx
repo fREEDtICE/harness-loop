@@ -14,6 +14,13 @@ import WorkspaceTimeline from "./WorkspaceTimeline";
 import RunDetail from "./RunDetail";
 import NewRunPanel from "./NewRunPanel";
 import ProjectSettingsPanel from "./ProjectSettingsPanel";
+import {
+  createPendingLaunch,
+  hasMaterializedRun,
+  mergePendingLaunch,
+  PENDING_RUN_PREFIX,
+  type PendingLaunch,
+} from "./pendingLaunch";
 import { useTranslation } from "react-i18next";
 import { basename, currentOverrides, readError } from "./utils";
 import {
@@ -37,6 +44,7 @@ export default function App() {
   const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
   const [selectedWorkspacePath, setSelectedWorkspacePath] = useState<string | null>(null);
   const [workspace, setWorkspace] = useState<WorkspacePayload | null>(null);
+  const [pendingLaunch, setPendingLaunch] = useState<PendingLaunch | null>(null);
   const [editors, setEditors] = useState<EditorState | null>(null);
   const [statusMessage, setStatusMessage] = useState<string>(t('app.openToBegin'));
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -73,20 +81,21 @@ export default function App() {
   }
 
   const promptDefaults = workspace?.prompts?.defaults ?? null;
-  const activeRunRoot = workspace?.runs.find((run) => run.lifecycle === "running")?.run_root
-    ?? (workspace?.current_run?.lifecycle === "running" ? workspace.current_run.run_root : null);
+  const visibleWorkspace = mergePendingLaunch(workspace, pendingLaunch);
+  const activeRunRoot = visibleWorkspace?.runs.find((run) => run.lifecycle === "running")?.run_root
+    ?? (visibleWorkspace?.current_run?.lifecycle === "running" ? visibleWorkspace.current_run.run_root : null);
 
   const detailRun = selectedRunRoot
-    ? workspace?.current_run?.run_root === selectedRunRoot
-      ? workspace.current_run
+    ? visibleWorkspace?.current_run?.run_root === selectedRunRoot
+      ? visibleWorkspace.current_run
       : selectedRun?.run_root === selectedRunRoot
         ? selectedRun
-      : null
+        : null
     : null;
 
-  const reporterWorkspace = workspace && detailRun
-    ? { ...workspace, current_run: detailRun }
-    : workspace;
+  const reporterWorkspace = visibleWorkspace && detailRun
+    ? { ...visibleWorkspace, current_run: detailRun }
+    : visibleWorkspace;
 
   const isLive = detailRun?.lifecycle === "running";
 
@@ -152,6 +161,12 @@ export default function App() {
   async function refreshWorkspace(workspacePath: string, announce = false) {
     try {
       const payload = await invoke<WorkspacePayload>("load_workspace", { workspacePath });
+      setPendingLaunch((current) => (
+        current && current.workspacePath === payload.record.workspace_path
+          && hasMaterializedRun(payload, current)
+          ? null
+          : current
+      ));
       startTransition(() => {
         setWorkspace((current) => {
           if (!current) return payload;
@@ -235,11 +250,12 @@ export default function App() {
 
   async function handleSelectRun(runRoot: string) {
     if (!selectedWorkspacePath) return;
+    if (runRoot.startsWith(PENDING_RUN_PREFIX)) return;
     updateSelectedRunState(
       selectedWorkspacePath,
       runRoot,
-      workspace?.current_run?.run_root === runRoot
-        ? workspace.current_run
+      visibleWorkspace?.current_run?.run_root === runRoot
+        ? visibleWorkspace.current_run
         : null,
     );
     await inspectRun(runRoot);
@@ -252,6 +268,7 @@ export default function App() {
     setIsRunning(true);
     setStatusMessage(t('app.startingRun'));
     setErrorMessage(null);
+    setPendingLaunch(createPendingLaunch(selectedWorkspacePath, requestDraft));
 
     const draft: LaunchDraft = {
       workspace_path: workspace.record.workspace_path,
@@ -263,6 +280,7 @@ export default function App() {
 
     try {
       const run = await invoke<RunState>("start_run", { draft });
+      setPendingLaunch(null);
       setWorkspace((current) =>
         current ? { ...current, current_run: run } : current,
       );
@@ -270,6 +288,7 @@ export default function App() {
       setStatusMessage(t('app.runCompleted'));
       await refreshWorkspace(selectedWorkspacePath, false);
     } catch (error) {
+      setPendingLaunch(null);
       setErrorMessage(readError(error));
       setStatusMessage(t('app.runFailed'));
     } finally {
@@ -327,7 +346,7 @@ export default function App() {
       return <SetupWizard onComplete={() => setNeedsSetup(false)} />;
     }
 
-    if (!workspace) return <HarnessLanding />;
+    if (!visibleWorkspace) return <HarnessLanding />;
 
     if (selectedRunRoot && detailRun) {
       return (
@@ -343,7 +362,7 @@ export default function App() {
 
     return (
       <WorkspaceTimeline
-        workspace={workspace}
+        workspace={visibleWorkspace}
         isRunning={isRunning}
         onSelectRun={handleSelectRun}
         onNewRun={() => setShowNewRun(true)}
@@ -479,7 +498,7 @@ export default function App() {
       {showProjectSettings && selectedWorkspacePath ? (
         <ProjectSettingsPanel
           workspacePath={selectedWorkspacePath}
-          discovery={workspace.discovery}
+          discovery={workspace?.discovery ?? null}
           onClose={() => setShowProjectSettings(false)}
           onError={setErrorMessage}
         />

@@ -7,8 +7,8 @@ use std::{
 };
 
 use loopsmith_core::discovery::{
-    WorkspaceDiscoveryRequest, WorkspaceDiscoveryStatus, WorkspaceDiscoveryStore,
-    profile_fingerprint, scan_workspace,
+    WorkspaceDiscoveryPhase, WorkspaceDiscoveryRequest, WorkspaceDiscoveryStatus,
+    WorkspaceDiscoveryStore, profile_fingerprint, scan_workspace,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -2404,6 +2404,7 @@ fn seed_cached_workspace_profile(workspace_dir: &Path) -> Result<(), Box<dyn Err
         last_refreshed_at: Some(profile.generated_at),
         last_refresh_error: None,
         used_fallback_profile: false,
+        current_phase: WorkspaceDiscoveryPhase::Ready,
     })?;
 
     Ok(())

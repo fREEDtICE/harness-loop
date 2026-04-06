@@ -147,6 +147,19 @@ pub struct WorkspaceDiscoveryRequest {
     pub previous_profile: Option<WorkspaceProfile>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceDiscoveryPhase {
+    #[default]
+    Idle,
+    Scanning,
+    ReusingCachedProfile,
+    Polishing,
+    UsingFallbackProfile,
+    Ready,
+    Failed,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkspaceDiscoveryStatus {
     pub workspace_path: PathBuf,
@@ -162,6 +175,8 @@ pub struct WorkspaceDiscoveryStatus {
     pub last_refresh_error: Option<String>,
     #[serde(default)]
     pub used_fallback_profile: bool,
+    #[serde(default)]
+    pub current_phase: WorkspaceDiscoveryPhase,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -10,7 +10,7 @@ use loopsmith_core::{
 };
 use loopsmith_ui::{
     HarnessUiService, LaunchDraft, StageLogSseServer, WorkspaceRunSummary,
-    validate_stage_stdout_log_path,
+    validate_run_artifact_path, validate_stage_stdout_log_path,
 };
 use rfd::FileDialog;
 use serde::Serialize;
@@ -414,6 +414,15 @@ fn read_stage_log(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn read_run_artifact(path: String) -> Result<String, String> {
+    let path = validate_run_artifact_path(&PathBuf::from(path)).map_err(render_error)?;
+    if !path.exists() {
+        return Ok(String::new());
+    }
+    std::fs::read_to_string(&path).map_err(render_error)
+}
+
+#[tauri::command]
 fn stage_log_stream_url(state: State<'_, AppState>, path: String) -> Result<String, String> {
     state
         .stage_log_sse
@@ -538,6 +547,7 @@ fn main() {
             save_setup_config,
             write_ui_state,
             read_stage_log,
+            read_run_artifact,
             stage_log_stream_url,
             open_file,
             reveal_in_finder,

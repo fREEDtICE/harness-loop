@@ -55,6 +55,22 @@
     "progress": "Feature {{current}}/{{total}} · {{stage}} attempt {{attempt}}",
     "summary": "{{total}} features · {{lifecycle}}"
   },
+  "discovery": {
+    "idle": "Idle",
+    "scanning": "Scanning workspace",
+    "reusingCachedProfile": "Reusing cached workspace profile",
+    "polishing": "Refreshing workspace profile",
+    "usingFallbackProfile": "Using fallback workspace profile",
+    "ready": "Ready",
+    "failed": "Failed",
+    "timelineIdle": "Discovery: idle",
+    "timelineScanning": "Discovery: scanning workspace",
+    "timelineReusingCachedProfile": "Discovery: reusing cached workspace profile",
+    "timelinePolishing": "Discovery: refreshing workspace profile",
+    "timelineUsingFallbackProfile": "Discovery: using fallback workspace profile",
+    "timelineReady": "Discovery complete. Starting harness run.",
+    "timelineFailed": "Discovery failed."
+  },
   "run": {
     "live": "● Live",
     "request": "Request",
@@ -125,6 +141,8 @@
     "builderSchema": "Builder Schema",
     "qaSchema": "QA Schema",
     "discovery": "Discovery",
+    "discoveryPhase": "Discovery Phase",
+    "discoverySummary": "Profile Summary",
     "profilePath": "Profile Path",
     "scanPath": "Scan Path",
     "lastRefresh": "Last Refresh",

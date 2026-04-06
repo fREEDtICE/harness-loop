@@ -1,6 +1,8 @@
 import { basename, formatDate } from "./utils";
 import type { WorkspacePayload, WorkspaceRunSummary } from "./types";
 import { useTranslation } from "react-i18next";
+import { getDiscoveryTimelineProgress } from "./discoveryPhasePresentation";
+import { isPendingLaunchRun } from "./pendingLaunch";
 
 function dotClass(run: WorkspaceRunSummary): string {
   if (run.lifecycle === "running") return "tl-dot running";
@@ -32,6 +34,7 @@ export default function WorkspaceTimeline({
   const sortedRuns = [...workspace.runs].sort(
     (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
   );
+  const pendingLaunchProgress = getDiscoveryTimelineProgress(workspace.discovery, t);
 
   return (
     <div className="ws-timeline" data-testid="ws-timeline">
@@ -70,6 +73,7 @@ export default function WorkspaceTimeline({
               <button
                 className="tl-node"
                 data-testid={`tl-node-${basename(run.run_root)}`}
+                disabled={isPendingLaunchRun(run)}
                 onClick={() => onSelectRun(run.run_root)}
               >
                 <span className={dotClass(run)} />
@@ -81,11 +85,13 @@ export default function WorkspaceTimeline({
                   </span>
                   <span className="tl-summary">{run.run_title || basename(run.run_root)}</span>
                   <span className="tl-progress">
-                    {run.lifecycle === "running" && run.active_stage
+                    {isPendingLaunchRun(run)
+                      ? pendingLaunchProgress
+                      : run.lifecycle === "running" && run.active_stage
                       ? t('timeline.progress', { current: run.current_feature_index, total: run.total_features, stage: run.active_stage.stage, attempt: run.active_stage.attempt })
                       : t('timeline.summary', { total: run.total_features, lifecycle: run.lifecycle })}
                   </span>
-                  {run.lifecycle === "running" ? (
+                  {!isPendingLaunchRun(run) && run.lifecycle === "running" ? (
                     <button
                       className="primary-button"
                       onClick={(e) => {
@@ -96,7 +102,7 @@ export default function WorkspaceTimeline({
                     >
                       {t('actions.resume')}
                     </button>
-                  ) : run.lifecycle !== "completed" ? (
+                  ) : !isPendingLaunchRun(run) && run.lifecycle !== "completed" ? (
                     <button
                       className="primary-button"
                       onClick={(e) => {

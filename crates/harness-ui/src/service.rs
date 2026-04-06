@@ -10,9 +10,9 @@ use loopsmith_core::{
     artifacts::{FileArtifactStore, StageArtifactSet},
     config::{AppConfig, PlannerWorkerConfig, ResolvedConfig, WorkerSelection},
     discovery::{
-        WorkspaceDiscoveryPayload, WorkspaceDiscoveryRequest, WorkspaceDiscoveryStatus,
-        WorkspaceDiscoveryStore, WorkspaceProfile, WorkspaceProfileSelection, profile_fingerprint,
-        scan_workspace,
+        WorkspaceDiscoveryPayload, WorkspaceDiscoveryPhase, WorkspaceDiscoveryRequest,
+        WorkspaceDiscoveryStatus, WorkspaceDiscoveryStore, WorkspaceProfile,
+        WorkspaceProfileSelection, profile_fingerprint, scan_workspace,
     },
     domain::{
         BuilderHandoff, EvaluationRequest, FeatureContract, PromptOverrides, PromptSnapshot,
@@ -307,10 +307,35 @@ async fn refresh_workspace_profile(
     let store = WorkspaceDiscoveryStore::new(&workspace_path);
     store.ensure_dirs()?;
 
-    let scan = scan_workspace(&workspace_path)?;
     let scan_path = store.scan_path();
     let profile_path = store.profile_path();
     let status_path = store.status_path();
+    let existing_status = store.load_status()?;
+    let previous_workspace_fingerprint = existing_status
+        .as_ref()
+        .map(|status| status.workspace_fingerprint.clone())
+        .unwrap_or_default();
+    let previous_profile_fingerprint = existing_status
+        .as_ref()
+        .and_then(|status| status.profile_fingerprint.clone());
+    let previous_last_refreshed_at = existing_status
+        .as_ref()
+        .and_then(|status| status.last_refreshed_at);
+
+    store.save_status(&workspace_discovery_status(
+        &workspace_path,
+        &scan_path,
+        &profile_path,
+        previous_workspace_fingerprint,
+        previous_profile_fingerprint,
+        Utc::now(),
+        previous_last_refreshed_at,
+        None,
+        false,
+        WorkspaceDiscoveryPhase::Scanning,
+    ))?;
+
+    let scan = scan_workspace(&workspace_path)?;
     store.save_scan(&scan)?;
 
     let existing_status = store.load_status()?;
@@ -328,17 +353,30 @@ async fn refresh_workspace_profile(
             .as_ref()
             .and_then(|status| status.last_refreshed_at)
             .unwrap_or(profile.generated_at);
-        let status = WorkspaceDiscoveryStatus {
-            workspace_path: workspace_path.clone(),
-            scan_path: scan_path.clone(),
-            profile_path: profile_path.clone(),
-            workspace_fingerprint: scan.workspace_fingerprint.clone(),
-            profile_fingerprint: Some(profile_fingerprint.clone()),
-            last_scanned_at: scan.scanned_at,
-            last_refreshed_at: Some(last_refreshed_at),
-            last_refresh_error: None,
-            used_fallback_profile: false,
-        };
+        store.save_status(&workspace_discovery_status(
+            &workspace_path,
+            &scan_path,
+            &profile_path,
+            scan.workspace_fingerprint.clone(),
+            Some(profile_fingerprint.clone()),
+            scan.scanned_at,
+            Some(last_refreshed_at),
+            None,
+            false,
+            WorkspaceDiscoveryPhase::ReusingCachedProfile,
+        ))?;
+        let status = workspace_discovery_status(
+            &workspace_path,
+            &scan_path,
+            &profile_path,
+            scan.workspace_fingerprint.clone(),
+            Some(profile_fingerprint.clone()),
+            scan.scanned_at,
+            Some(last_refreshed_at),
+            None,
+            false,
+            WorkspaceDiscoveryPhase::Ready,
+        );
         store.save_status(&status)?;
 
         return Ok(WorkspaceProfileSelection {
@@ -365,6 +403,22 @@ async fn refresh_workspace_profile(
         scan: scan.clone(),
         previous_profile: existing_profile.clone(),
     };
+    store.save_status(&workspace_discovery_status(
+        &workspace_path,
+        &scan_path,
+        &profile_path,
+        scan.workspace_fingerprint.clone(),
+        existing_status
+            .as_ref()
+            .and_then(|status| status.profile_fingerprint.clone()),
+        scan.scanned_at,
+        existing_status
+            .as_ref()
+            .and_then(|status| status.last_refreshed_at),
+        None,
+        false,
+        WorkspaceDiscoveryPhase::Polishing,
+    ))?;
 
     match worker.discover(&context, &artifacts, &request).await {
         Ok(result) => {
@@ -381,17 +435,18 @@ async fn refresh_workspace_profile(
             )
             .with_context(|| format!("failed to write {}", artifacts.result_file.display()))?;
 
-            let status = WorkspaceDiscoveryStatus {
-                workspace_path: workspace_path.clone(),
-                scan_path: scan_path.clone(),
-                profile_path: profile_path.clone(),
-                workspace_fingerprint: scan.workspace_fingerprint.clone(),
-                profile_fingerprint: Some(profile_fingerprint.clone()),
-                last_scanned_at: scan.scanned_at,
-                last_refreshed_at: Some(profile.generated_at),
-                last_refresh_error: None,
-                used_fallback_profile: false,
-            };
+            let status = workspace_discovery_status(
+                &workspace_path,
+                &scan_path,
+                &profile_path,
+                scan.workspace_fingerprint.clone(),
+                Some(profile_fingerprint.clone()),
+                scan.scanned_at,
+                Some(profile.generated_at),
+                None,
+                false,
+                WorkspaceDiscoveryPhase::Ready,
+            );
             store.save_status(&status)?;
 
             Ok(WorkspaceProfileSelection {
@@ -417,17 +472,18 @@ async fn refresh_workspace_profile(
                     .as_ref()
                     .and_then(|status| status.last_refreshed_at)
                     .unwrap_or(profile.generated_at);
-                let status = WorkspaceDiscoveryStatus {
-                    workspace_path: workspace_path.clone(),
-                    scan_path: scan_path.clone(),
-                    profile_path: profile_path.clone(),
-                    workspace_fingerprint: scan.workspace_fingerprint.clone(),
-                    profile_fingerprint: Some(profile_fingerprint.clone()),
-                    last_scanned_at: scan.scanned_at,
-                    last_refreshed_at: Some(last_refreshed_at),
-                    last_refresh_error: Some(error_message.clone()),
-                    used_fallback_profile: true,
-                };
+                let status = workspace_discovery_status(
+                    &workspace_path,
+                    &scan_path,
+                    &profile_path,
+                    scan.workspace_fingerprint.clone(),
+                    Some(profile_fingerprint.clone()),
+                    scan.scanned_at,
+                    Some(last_refreshed_at),
+                    Some(error_message.clone()),
+                    true,
+                    WorkspaceDiscoveryPhase::UsingFallbackProfile,
+                );
                 store.save_status(&status)?;
 
                 return Ok(WorkspaceProfileSelection {
@@ -444,20 +500,49 @@ async fn refresh_workspace_profile(
                 });
             }
 
-            let status = WorkspaceDiscoveryStatus {
-                workspace_path,
-                scan_path,
-                profile_path,
-                workspace_fingerprint: scan.workspace_fingerprint,
-                profile_fingerprint: None,
-                last_scanned_at: scan.scanned_at,
-                last_refreshed_at: existing_status.and_then(|status| status.last_refreshed_at),
-                last_refresh_error: Some(error_message),
-                used_fallback_profile: false,
-            };
+            let status = workspace_discovery_status(
+                &workspace_path,
+                &scan_path,
+                &profile_path,
+                scan.workspace_fingerprint,
+                None,
+                scan.scanned_at,
+                existing_status
+                    .as_ref()
+                    .and_then(|status| status.last_refreshed_at),
+                Some(error_message),
+                false,
+                WorkspaceDiscoveryPhase::Failed,
+            );
             store.save_status(&status)?;
             Err(error)
         }
+    }
+}
+
+fn workspace_discovery_status(
+    workspace_path: &Path,
+    scan_path: &Path,
+    profile_path: &Path,
+    workspace_fingerprint: String,
+    profile_fingerprint: Option<String>,
+    last_scanned_at: DateTime<Utc>,
+    last_refreshed_at: Option<DateTime<Utc>>,
+    last_refresh_error: Option<String>,
+    used_fallback_profile: bool,
+    current_phase: WorkspaceDiscoveryPhase,
+) -> WorkspaceDiscoveryStatus {
+    WorkspaceDiscoveryStatus {
+        workspace_path: workspace_path.to_path_buf(),
+        scan_path: scan_path.to_path_buf(),
+        profile_path: profile_path.to_path_buf(),
+        workspace_fingerprint,
+        profile_fingerprint,
+        last_scanned_at,
+        last_refreshed_at,
+        last_refresh_error,
+        used_fallback_profile,
+        current_phase,
     }
 }
 
@@ -671,7 +756,8 @@ fn verify_worker_binary(binary: &str, name: &str, install_hint: &str) -> Result<
 mod tests {
     use std::{
         fs,
-        sync::{Arc, Mutex},
+        sync::{Arc, Mutex, mpsc},
+        time::Duration,
     };
 
     use anyhow::{Result, anyhow};
@@ -687,7 +773,10 @@ mod tests {
             ResolvedStorageConfig, RuntimeConfig, RuntimeSupervisionConfig, WorkerConfig,
             WorkerSelection, WorkspaceConfig,
         },
-        discovery::{DiscoveryArtifactSet, WorkspaceDiscoveryRequest, WorkspaceDiscoveryStore},
+        discovery::{
+            DiscoveryArtifactSet, WorkspaceDiscoveryPhase, WorkspaceDiscoveryRequest,
+            WorkspaceDiscoveryStore, WorkspaceProfile,
+        },
         domain::{
             BuilderHandoff, EvaluationRequest, FeatureContract, PromptOverrides, QaReport,
             QaStatus, RunLifecycleStatus, RunState, WorkerResult, WorkerStatus,
@@ -708,6 +797,25 @@ mod tests {
         state: Arc<Mutex<FakeDiscoveryState>>,
     }
 
+    fn write_fake_discovery_output(
+        artifacts: &DiscoveryArtifactSet,
+        profile: &WorkspaceProfile,
+        discover_calls: usize,
+    ) -> Result<()> {
+        fs::write(&artifacts.prompt_file, "fake discovery prompt\n").expect("write prompt");
+        fs::write(&artifacts.stdout_log, "fake discovery stdout\n").expect("write stdout");
+        fs::write(&artifacts.stderr_log, "").expect("write stderr");
+
+        let mut profile = profile.clone();
+        profile.summary = format!("{} [refresh={}]", profile.summary, discover_calls);
+        fs::write(
+            &artifacts.output_file,
+            serde_json::to_vec_pretty(&profile).expect("serialize profile"),
+        )
+        .expect("write output");
+        Ok(())
+    }
+
     #[async_trait]
     impl WorkerAdapter for FakeDiscoveryWorker {
         async fn discover(
@@ -722,17 +830,8 @@ mod tests {
                 return Err(anyhow!(message));
             }
 
-            let mut profile = request.synthesize_profile();
-            profile.summary = format!("{} [refresh={}]", profile.summary, state.discover_calls);
-
-            fs::write(&artifacts.prompt_file, "fake discovery prompt\n").expect("write prompt");
-            fs::write(&artifacts.stdout_log, "fake discovery stdout\n").expect("write stdout");
-            fs::write(&artifacts.stderr_log, "").expect("write stderr");
-            fs::write(
-                &artifacts.output_file,
-                serde_json::to_vec_pretty(&profile).expect("serialize profile"),
-            )
-            .expect("write output");
+            let profile = request.synthesize_profile();
+            write_fake_discovery_output(artifacts, &profile, state.discover_calls)?;
 
             Ok(DiscoveryWorkerResult {
                 status: WorkerStatus::Prepared,
@@ -743,6 +842,86 @@ mod tests {
                 stderr_log: artifacts.stderr_log.clone(),
                 notes: Vec::new(),
                 session_id: Some(format!("fake-discover-{:02}", state.discover_calls)),
+            })
+        }
+
+        async fn plan(
+            &self,
+            _context: &WorkerContext,
+            _artifacts: &StageArtifactSet,
+            _request: &loopsmith_core::domain::PlanningRequest,
+        ) -> Result<WorkerResult> {
+            Err(anyhow!("unexpected plan call in discovery test"))
+        }
+
+        async fn build(
+            &self,
+            _context: &WorkerContext,
+            _feature: &FeatureLayout,
+            _artifacts: &StageArtifactSet,
+            _contract: &FeatureContract,
+        ) -> Result<WorkerResult> {
+            Err(anyhow!("unexpected build call in discovery test"))
+        }
+
+        async fn evaluate(
+            &self,
+            _context: &WorkerContext,
+            _feature: &FeatureLayout,
+            _artifacts: &StageArtifactSet,
+            _request: &EvaluationRequest,
+        ) -> Result<WorkerResult> {
+            Err(anyhow!("unexpected evaluate call in discovery test"))
+        }
+
+        async fn repair(
+            &self,
+            _context: &WorkerContext,
+            _feature: &FeatureLayout,
+            _artifacts: &StageArtifactSet,
+            _contract: &FeatureContract,
+            _builder_handoff: &BuilderHandoff,
+            _qa_report: &QaReport,
+            _previous_session_id: Option<&str>,
+        ) -> Result<WorkerResult> {
+            Err(anyhow!("unexpected repair call in discovery test"))
+        }
+    }
+
+    struct DelayedDiscoveryWorker {
+        state: Arc<Mutex<FakeDiscoveryState>>,
+        entered: mpsc::Sender<()>,
+        pause: Duration,
+    }
+
+    #[async_trait]
+    impl WorkerAdapter for DelayedDiscoveryWorker {
+        async fn discover(
+            &self,
+            _context: &DiscoveryContext,
+            artifacts: &DiscoveryArtifactSet,
+            request: &WorkspaceDiscoveryRequest,
+        ) -> Result<DiscoveryWorkerResult> {
+            let discover_calls = {
+                let mut state = self.state.lock().expect("lock");
+                state.discover_calls += 1;
+                state.discover_calls
+            };
+            self.entered.send(()).expect("notify discovery start");
+            tokio::time::sleep(self.pause).await;
+
+            let profile = request.synthesize_profile();
+            write_fake_discovery_output(artifacts, &profile, discover_calls)?;
+
+            Ok(DiscoveryWorkerResult {
+                status: WorkerStatus::Prepared,
+                command: vec!["fake".to_string(), "discover".to_string()],
+                prompt_file: artifacts.prompt_file.clone(),
+                output_file: artifacts.output_file.clone(),
+                stdout_log: artifacts.stdout_log.clone(),
+                stderr_log: artifacts.stderr_log.clone(),
+                notes: Vec::new(),
+                session_id: Some(format!("fake-discover-{discover_calls:02}")),
             })
         }
 
@@ -1025,6 +1204,7 @@ commands = []
         assert!(payload.profile_summary.is_some());
         assert!(payload.status.last_refresh_error.is_none());
         assert!(!payload.status.used_fallback_profile);
+        assert_eq!(payload.status.current_phase, WorkspaceDiscoveryPhase::Ready);
 
         Ok(())
     }
@@ -1048,6 +1228,13 @@ commands = []
         assert_eq!(first.profile_fingerprint, second.profile_fingerprint);
         assert!(!second.used_fallback_profile);
         assert!(second.refresh_error.is_none());
+        assert_eq!(
+            WorkspaceDiscoveryStore::new(&workspace)
+                .load_status()?
+                .expect("status")
+                .current_phase,
+            WorkspaceDiscoveryPhase::Ready
+        );
 
         Ok(())
     }
@@ -1073,6 +1260,54 @@ commands = []
         assert_ne!(first.workspace_fingerprint, second.workspace_fingerprint);
         assert_ne!(first.profile_fingerprint, second.profile_fingerprint);
         assert!(second.profile.summary.contains("[refresh=2]"));
+        assert_eq!(
+            WorkspaceDiscoveryStore::new(&workspace)
+                .load_status()?
+                .expect("status")
+                .current_phase,
+            WorkspaceDiscoveryPhase::Ready
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn refresh_workspace_profile_persists_polishing_phase_while_worker_is_running()
+    -> Result<()> {
+        let temp = tempdir()?;
+        let config = discovery_test_config(temp.path());
+        let workspace = discovery_test_workspace(temp.path())?;
+        let state = Arc::new(Mutex::new(FakeDiscoveryState::default()));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let store = WorkspaceDiscoveryStore::new(&workspace);
+
+        let refresh = tokio::spawn({
+            let config = config.clone();
+            let workspace = workspace.clone();
+            let state = state.clone();
+            async move {
+                let worker = DelayedDiscoveryWorker {
+                    state,
+                    entered: entered_tx,
+                    pause: Duration::from_millis(250),
+                };
+                refresh_workspace_profile(&config, &worker, &workspace).await
+            }
+        });
+
+        tokio::task::spawn_blocking(move || entered_rx.recv_timeout(Duration::from_secs(1)))
+            .await
+            .expect("join entered wait")
+            .expect("wait for discovery worker");
+        let status = store.load_status()?.expect("status");
+        assert_eq!(status.current_phase, WorkspaceDiscoveryPhase::Polishing);
+
+        let selection = refresh.await.expect("task join")?;
+        assert!(selection.refresh_error.is_none());
+        assert_eq!(
+            store.load_status()?.expect("status").current_phase,
+            WorkspaceDiscoveryPhase::Ready
+        );
 
         Ok(())
     }
@@ -1112,6 +1347,10 @@ commands = []
             Some("discovery worker failed")
         );
         assert!(status.used_fallback_profile);
+        assert_eq!(
+            status.current_phase,
+            WorkspaceDiscoveryPhase::UsingFallbackProfile
+        );
 
         Ok(())
     }
@@ -1144,6 +1383,7 @@ commands = []
             Some("discovery worker failed")
         );
         assert!(!status.used_fallback_profile);
+        assert_eq!(status.current_phase, WorkspaceDiscoveryPhase::Failed);
 
         Ok(())
     }

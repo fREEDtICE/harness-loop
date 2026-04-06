@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { parse, stringify } from "smol-toml";
+import DiscoveryStatusPanel from "./DiscoveryStatusPanel";
 import type { WorkspaceDiscoveryPayload } from "./types";
 import { readError } from "./utils";
 
@@ -187,25 +188,7 @@ export default function ProjectSettingsPanel({
             ) : form ? (
               <div className="cfg-form">
                 {discovery ? (
-                  <div className="cfg-group">
-                    <div className="cfg-group-title">{t('settings.discovery')}</div>
-                    <FormRow>
-                      <FormField label={t('settings.profilePath')}>
-                        <input value={discovery.status.profile_path} readOnly />
-                      </FormField>
-                      <FormField label={t('settings.lastRefresh')}>
-                        <input value={discovery.status.last_refreshed_at ?? "—"} readOnly />
-                      </FormField>
-                    </FormRow>
-                    <FormRow>
-                      <FormField label={t('settings.scanPath')}>
-                        <input value={discovery.status.scan_path} readOnly />
-                      </FormField>
-                      <FormField label={t('settings.refreshError')}>
-                        <input value={discovery.status.last_refresh_error ?? "—"} readOnly />
-                      </FormField>
-                    </FormRow>
-                  </div>
+                  <DiscoveryStatusPanel discovery={discovery} />
                 ) : null}
 
                 <div className="cfg-group">

@@ -385,6 +385,39 @@ pub fn validate_stage_stdout_log_path(path: &Path) -> io::Result<PathBuf> {
     Ok(path)
 }
 
+/// Validates an arbitrary run artifact path inside the `.loopsmith-runs` tree.
+///
+/// Unlike [`validate_stage_stdout_log_path`], this does not enforce a
+/// `-stdout.log` suffix or a `logs` parent directory, so it can be used
+/// for `request.md`, JSON artifacts, and similar files.
+pub fn validate_run_artifact_path(path: &Path) -> io::Result<PathBuf> {
+    let path = normalize_path(path.to_path_buf());
+    if !path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("artifact path must be absolute: {}", path.display()),
+        ));
+    }
+
+    let has_runs_component = path.components().any(|component| {
+        matches!(
+            component,
+            Component::Normal(part) if part == OsStr::new(".loopsmith-runs")
+        )
+    });
+    if !has_runs_component {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "artifact path must stay within a .loopsmith-runs artifact root: {}",
+                path.display()
+            ),
+        ));
+    }
+
+    Ok(path)
+}
+
 fn read_full_file(path: &Path) -> io::Result<Vec<u8>> {
     match fs::read(path) {
         Ok(bytes) => Ok(bytes),
