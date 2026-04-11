@@ -79,6 +79,7 @@ async fn main() -> Result<()> {
     }
 
     let cli = Cli::parse();
+    let service = HarnessUiService;
 
     home::ensure_global_home()?;
 
