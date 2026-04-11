@@ -1,8 +1,14 @@
 [workspace]
 members = [
     ".",
+    "apps/harness-ui/src-tauri",
+    "crates/harness-desktop-shell",
     "crates/harness-core",
+    "crates/loopsmith-orchestration",
+    "crates/harness-worker-factory",
+    "crates/harness-worker-claude",
     "crates/harness-worker-codex",
+    "crates/harness-worker-gemini",
     "crates/harness-worker-simulated",
 ]
 resolver = "2"
@@ -15,32 +21,41 @@ rust-version = "1.85"
 [workspace.dependencies]
 anyhow = "1.0"
 async-trait = "0.1"
+base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5", features = ["derive"] }
+sha2 = "0.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tempfile = "3.23"
-tokio = { version = "1.48", features = ["io-util", "macros", "process", "rt-multi-thread", "time"] }
+tokio = { version = "1.48", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "time"] }
 toml = "0.8"
 tracing = "0.1"
+tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1.18", features = ["serde", "v4"] }
+dirs = "6"
+dialoguer = "0.11"
+rusqlite = { version = "0.34", features = ["bundled"] }
+walkdir = "2"
 
 [package]
-name = "codex-harness-rs"
+name = "loopsmith"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+
+[[bin]]
+name = "loopsmith"
+path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
 clap.workspace = true
 tokio.workspace = true
-tracing-subscriber.workspace = true
-harness-core = { path = "crates/harness-core" }
-harness-worker-codex = { path = "crates/harness-worker-codex" }
-harness-worker-simulated = { path = "crates/harness-worker-simulated" }
+loopsmith-core = { path = "crates/harness-core" }
+loopsmith-orchestration = { path = "crates/loopsmith-orchestration" }
 
 [dev-dependencies]
 serde_json.workspace = true

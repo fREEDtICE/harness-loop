@@ -13,7 +13,7 @@ Operating rules:
 
 Output guidance:
 - `goal`: the narrow outcome the run should achieve.
-- `features`: ordered implementation slices capped by `feature_limit`; keep each slice independently buildable and evaluable.
+- `features`: ordered implementation slices sized to the request. If `feature_limit_is_hard` is `true`, do not exceed `feature_limit`. If `feature_limit_is_hard` is `false`, treat `feature_limit` as a suggestion rather than a requirement.
 - `acceptance_criteria`: short, testable statements for that slice only.
 - `risks`: concrete sources of ambiguity, missing truth, missing verification, scope coupling, or runtime uncertainty.
 - `checkpoints`: concrete review/reset moments, especially the first deterministic checks that should happen before scope expands.

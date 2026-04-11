@@ -9,7 +9,7 @@ Rust scaffold for a long-running application development harness built around a 
 - `crates/harness-worker-codex`: production Codex CLI adapter.
 - `crates/harness-worker-simulated`: deterministic offline worker for smoke tests and local harness development.
 - `config/example.toml`: safe offline config using the simulated worker.
-- `config/codex-cli.toml`: default real Codex CLI config with git worktree isolation enabled.
+- `config/codex-cli.toml`: default real Codex CLI config with git-backed in-place workspace execution enabled.
 
 ## Design stance
 
@@ -60,7 +60,7 @@ Use that when developing the harness itself without the real Codex worker.
 `config/codex-cli.toml` is the default production-oriented template:
 
 - `worker.kind = "codex_cli"`
-- `workspace.isolation = "git_worktree"`
+- `workspace.isolation = "git_worktree"` to require a git repo while executing directly in the provided workspace
 - `runtime.supervision.enabled = true`
 - supports both per-service processes and command-driven runtime stacks
 - optional `[worker.planner]` can run live Codex planning while build and evaluation stay on another worker
@@ -103,9 +103,9 @@ All path arguments may be absolute or relative. Relative paths are resolved from
 `run`
 
 - `--config`: optional path to the TOML config file. Defaults to `config/codex-cli.toml`.
-- `--workspace`: required path to the source workspace the harness should copy or isolate for execution.
+- `--workspace`: required path to the source workspace the harness should execute directly.
 - `--request-file`: required path to the text file containing the user request.
-- `--feature-limit`: optional per-run override for `runtime.feature_limit`. Values below `1` are clamped to `1`.
+- `--feature-limit`: optional per-run hard cap for planner feature count. It overrides the advisory `runtime.feature_limit`. Values below `1` are clamped to `1`.
 
 `resume`
 
@@ -168,7 +168,7 @@ If a supervised service fails to become ready, the run fails before feature exec
 The current scaffold is covered by:
 
 - unit tests for config resolution, controller state, workspace isolation, service supervision, and verification execution
-- binary smoke tests for happy path, repair path, repair-budget exhaustion, multi-feature backlog execution, `inspect`, `resume`, and deterministic verification failure gating
+- binary smoke tests for happy path, repair path, repair-budget exhaustion, multi-feature backlog execution, `inspect`, `resume`, deterministic verification failure gating, and in-place git workspace paths before the first commit even when run artifacts live under the workspace
 - live Codex E2E coverage for both the full run loop and planner-only routing when the local environment is Codex-ready
 
 Run the user-journey suite with:

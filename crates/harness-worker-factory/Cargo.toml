@@ -1,0 +1,14 @@
+[package]
+name = "loopsmith-worker-factory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+loopsmith-core = { path = "../harness-core" }
+loopsmith-worker-claude = { path = "../harness-worker-claude" }
+loopsmith-worker-codex = { path = "../harness-worker-codex" }
+loopsmith-worker-gemini = { path = "../harness-worker-gemini" }
+loopsmith-worker-simulated = { path = "../harness-worker-simulated" }

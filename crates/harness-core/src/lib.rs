@@ -1,9 +1,17 @@
 pub mod artifacts;
 pub mod config;
 pub mod controller;
+pub mod discovery;
+pub mod discovery_quality;
 pub mod domain;
+pub mod env_probe;
 pub mod evaluator;
+pub mod home;
+pub mod logging;
 pub mod paths;
 pub mod runtime;
+pub mod setup;
+pub mod shell_env;
+pub mod storage;
 pub mod worker;
 pub mod workspace;

@@ -40,6 +40,22 @@ resolve_live_lane() {
 
 echo "==> Running deterministic user journeys"
 cargo test --test run_smoke -- --nocapture
+cargo test --test discovery_smoke -- --nocapture
+
+if command -v pnpm >/dev/null 2>&1 && [ -d "$REPO_ROOT/apps/harness-ui/node_modules" ]; then
+  echo "==> Running frontend discovery UI contracts"
+  pnpm --dir "$REPO_ROOT/apps/harness-ui" test:discovery-ui-contract
+  echo "==> Running frontend pending-launch contracts"
+  pnpm --dir "$REPO_ROOT/apps/harness-ui" test:pending-launch-contract
+  echo "==> Running frontend run-detail streaming contracts"
+  pnpm --dir "$REPO_ROOT/apps/harness-ui" test:run-detail-streaming
+  echo "==> Running frontend run-selection freshness contracts"
+  pnpm --dir "$REPO_ROOT/apps/harness-ui" test:run-selection-freshness
+  echo "==> Verifying frontend setup wizard contracts"
+  pnpm --dir "$REPO_ROOT/apps/harness-ui" verify:setup-wizard-contract
+else
+  echo "Skipping frontend UI contracts; pnpm or frontend dependencies are unavailable"
+fi
 
 echo "==> Running live user journeys"
 if resolve_live_lane; then

@@ -17,6 +17,13 @@ pub struct FileArtifactStore {
 #[derive(Debug, Clone, Serialize)]
 pub struct RunLayout {
     pub root: PathBuf,
+    pub inputs_dir: PathBuf,
+    pub prompt_inputs_dir: PathBuf,
+    pub workspace_profile_file: PathBuf,
+    pub planner_prompt_file: PathBuf,
+    pub builder_prompt_file: PathBuf,
+    pub evaluator_prompt_file: PathBuf,
+    pub launch_file: PathBuf,
     pub request_file: PathBuf,
     pub plan_file: PathBuf,
     pub runtime_plan_file: PathBuf,
@@ -68,6 +75,8 @@ impl FileArtifactStore {
 
     pub fn initialize(&self, run_id: Uuid) -> Result<RunLayout> {
         let root = self.base_dir.join(run_id.to_string());
+        let inputs_dir = root.join("inputs");
+        let prompt_inputs_dir = inputs_dir.join("prompts");
         let features_dir = root.join("features");
         let worker_dir = root.join("worker");
         let logs_dir = worker_dir.join("logs");
@@ -76,6 +85,8 @@ impl FileArtifactStore {
 
         for dir in [
             &root,
+            &inputs_dir,
+            &prompt_inputs_dir,
             &features_dir,
             &worker_dir,
             &logs_dir,
@@ -87,6 +98,13 @@ impl FileArtifactStore {
         }
 
         Ok(RunLayout {
+            inputs_dir: inputs_dir.clone(),
+            prompt_inputs_dir: prompt_inputs_dir.clone(),
+            workspace_profile_file: inputs_dir.join("workspace-profile.json"),
+            planner_prompt_file: prompt_inputs_dir.join("planner.md"),
+            builder_prompt_file: prompt_inputs_dir.join("builder.md"),
+            evaluator_prompt_file: prompt_inputs_dir.join("evaluator.md"),
+            launch_file: root.join("launch.json"),
             request_file: root.join("request.md"),
             plan_file: root.join("plan.json"),
             runtime_plan_file: root.join("runtime-plan.json"),
@@ -257,7 +275,7 @@ mod tests {
     #[test]
     fn feature_layout_creates_per_feature_directories() {
         let temp = tempdir().expect("tempdir");
-        let store = FileArtifactStore::new(temp.path().join("runs"));
+        let store = FileArtifactStore::new(temp.path().join(".loopsmith-runs"));
         let layout = store.initialize(Uuid::nil()).expect("run layout");
         let feature = layout
             .feature_layout(0, "Feature 01 / Auth")

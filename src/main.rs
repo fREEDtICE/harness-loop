@@ -1,36 +1,40 @@
-use std::{fs, path::Path, path::PathBuf};
+use std::{fs, path::Path, path::PathBuf, process};
 
 use anyhow::{Context, Result};
-use async_trait::async_trait;
 use clap::{Parser, Subcommand};
-use harness_core::{
-    artifacts::{FeatureLayout, FileArtifactStore, StageArtifactSet},
-    config::{
-        AppConfig, CodexWorkerConfig, PlannerWorkerConfig, ResolvedConfig, SimulationWorkerConfig,
-        WorkerKind,
+use loopsmith_core::{
+    discovery::{WorkspaceDiscoveryPayload, WorkspaceDiscoveryPhase, WorkspaceProfileSelection},
+    discovery_quality::{
+        DiscoveryQualityGate, discovery_quality_report_path, evaluate_discovery_store,
+        print_discovery_quality_report, save_discovery_quality_report,
     },
-    controller::HarnessController,
-    domain::{BuilderHandoff, EvaluationRequest, FeatureContract, QaReport, RunRequest, RunState},
+    domain::RunState,
+    home, logging,
     paths::normalize_path,
-    worker::{WorkerAdapter, WorkerContext},
+    setup, shell_env,
 };
-use harness_worker_codex::CodexCliWorker;
-use harness_worker_simulated::SimulatedWorker;
-use tracing_subscriber::{EnvFilter, fmt};
+use loopsmith_orchestration::service::{HarnessUiService, LaunchDraft};
 
 #[derive(Debug, Parser)]
-#[command(name = "codex-harness-rs")]
-#[command(about = "Rust scaffold for a long-running app development harness")]
+#[command(name = "loopsmith")]
+#[command(about = "LoopSmith – a long-running application development harness")]
 struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
+
+    #[arg(
+        long,
+        global = true,
+        help = "Disable the GUI and run in headless CLI mode"
+    )]
+    no_ui: bool,
 }
 
 #[derive(Debug, Subcommand)]
 enum Command {
     Run {
-        #[arg(long, default_value = "config/codex-cli.toml")]
-        config: PathBuf,
+        #[arg(long)]
+        config: Option<PathBuf>,
         #[arg(long)]
         workspace: PathBuf,
         #[arg(long)]
@@ -39,201 +43,181 @@ enum Command {
         feature_limit: Option<usize>,
     },
     Resume {
-        #[arg(long, default_value = "config/codex-cli.toml")]
-        config: PathBuf,
+        #[arg(long)]
+        config: Option<PathBuf>,
         #[arg(long)]
         run_root: PathBuf,
     },
     Inspect {
-        #[arg(long, default_value = "config/codex-cli.toml")]
-        config: PathBuf,
+        #[arg(long)]
+        config: Option<PathBuf>,
         #[arg(long)]
         run_root: PathBuf,
+    },
+    Discover {
+        #[arg(long)]
+        config: Option<PathBuf>,
+        #[arg(long)]
+        workspace: PathBuf,
+    },
+    DiscoverEval {
+        #[arg(long)]
+        workspace: PathBuf,
+    },
+    Init {
+        #[arg(long, help = "Overwrite existing workspace templates")]
+        force: bool,
     },
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    init_tracing();
+    let _log_guard = logging::init_logging()?;
+
+    if let Err(err) = shell_env::inherit_shell_env() {
+        eprintln!("warn: failed to inherit shell environment: {err}");
+    }
 
     let cli = Cli::parse();
+    let service = HarnessUiService;
+
+    home::ensure_global_home()?;
 
     match cli.command {
-        Command::Run {
-            config,
-            workspace,
-            request_file,
-            feature_limit,
-        } => {
-            let config_path = absolutize(&config)?;
-            let source_workspace = absolutize(&workspace)?;
-            let request_file = absolutize(&request_file)?;
+        None => {
+            if cli.no_ui {
+                eprintln!("loopsmith: no subcommand specified. Run `loopsmith --help` for usage.");
+                process::exit(1);
+            }
 
-            let app_config = AppConfig::load(&config_path)?;
-            let request = fs::read_to_string(&request_file).with_context(|| {
-                format!("failed to read request file {}", request_file.display())
-            })?;
+            if !setup::has_default_config()? {
+                setup::run_interactive_setup()?;
+            }
 
-            let state = with_selected_worker(app_config, |controller| async move {
-                controller
-                    .start_run(RunRequest {
-                        user_request: request,
-                        source_workspace,
-                        feature_limit,
-                    })
-                    .await
-            })
-            .await?;
-
-            print_run_state(&state);
+            launch_gui()?;
         }
-        Command::Resume { config, run_root } => {
-            let config_path = absolutize(&config)?;
-            let run_root = absolutize(&run_root)?;
-            let app_config = AppConfig::load(&config_path)?;
-
-            let state = with_selected_worker(app_config, |controller| async move {
-                controller.resume_run(run_root).await
-            })
-            .await?;
-
-            print_run_state(&state);
-        }
-        Command::Inspect { config, run_root } => {
-            let config_path = absolutize(&config)?;
-            let run_root = absolutize(&run_root)?;
-            let app_config = AppConfig::load(&config_path)?;
-
-            let state = with_selected_worker(app_config, |controller| async move {
-                controller.inspect_run(run_root)
-            })
-            .await?;
-
-            print_run_state(&state);
+        Some(command) => {
+            ensure_ready_for_cli(&command)?;
+            run_command(command).await?;
         }
     }
 
     Ok(())
 }
 
-async fn with_selected_worker<F, Fut>(config: ResolvedConfig, f: F) -> Result<RunState>
-where
-    F: FnOnce(HarnessController<Box<dyn WorkerAdapter>>) -> Fut,
-    Fut: std::future::Future<Output = Result<RunState>>,
-{
-    let artifact_store = FileArtifactStore::new(config.storage.runs_dir.clone());
-    let default_worker = build_worker_from_selection(
-        config.worker.kind,
-        config.worker.codex.as_ref(),
-        config.worker.simulation.as_ref(),
-    )?;
-    let worker: Box<dyn WorkerAdapter> = if let Some(planner) = config.planner_worker() {
-        let planner_worker = build_worker_from_planner_config(planner)?;
-        Box::new(PlannerRoutedWorker::new(planner_worker, default_worker))
-    } else {
-        default_worker
-    };
-    let controller = HarnessController::new(config, artifact_store, worker);
-    f(controller).await
+fn ensure_ready_for_cli(command: &Command) -> Result<()> {
+    match command {
+        Command::Init { .. } => {}
+        Command::Run {
+            config: Some(_), ..
+        }
+        | Command::Discover {
+            config: Some(_), ..
+        }
+        | Command::Resume {
+            config: Some(_), ..
+        }
+        | Command::Inspect {
+            config: Some(_), ..
+        }
+        | Command::DiscoverEval { .. } => {}
+        _ => {
+            if !setup::has_default_config()? {
+                setup::run_interactive_setup()?;
+            }
+        }
+    }
+    Ok(())
 }
 
-struct PlannerRoutedWorker {
-    planner: Box<dyn WorkerAdapter>,
-    default: Box<dyn WorkerAdapter>,
+async fn run_command(command: Command) -> Result<()> {
+    match command {
+        Command::Init { force } => {
+            if force {
+                home::init_global_home_force()?;
+            }
+            setup::run_interactive_setup()?;
+        }
+        Command::Run {
+            config,
+            workspace,
+            request_file,
+            feature_limit,
+        } => {
+            let config_path = resolve_config(config)?;
+            let source_workspace = absolutize(&workspace)?;
+            let request_file = absolutize(&request_file)?;
+            let request = fs::read_to_string(&request_file).with_context(|| {
+                format!("failed to read request file {}", request_file.display())
+            })?;
+
+            let service = HarnessUiService;
+            let state = service
+                .start_run(LaunchDraft {
+                    workspace_path: source_workspace,
+                    config_path,
+                    request_draft: request,
+                    prompt_overrides: Default::default(),
+                    feature_limit,
+                })
+                .await?;
+
+            print_run_state(&state);
+        }
+        Command::Resume { config, run_root } => {
+            let config_path = resolve_config(config)?;
+            let run_root = absolutize(&run_root)?;
+            let service = HarnessUiService;
+            let state = service.resume_run(config_path, run_root).await?;
+
+            print_run_state(&state);
+        }
+        Command::Inspect { config, run_root } => {
+            let config_path = resolve_config(config)?;
+            let run_root = absolutize(&run_root)?;
+            let service = HarnessUiService;
+            let state = service.inspect_run(config_path, run_root)?;
+
+            print_run_state(&state);
+        }
+        Command::Discover { config, workspace } => {
+            let config_path = resolve_config(config)?;
+            let workspace = absolutize(&workspace)?;
+            let service = HarnessUiService;
+            let selection = service.discover_workspace(&config_path, &workspace).await?;
+            let payload = service.load_discovery_payload(&workspace)?;
+
+            print_discovery_selection(&selection, payload.as_ref());
+        }
+        Command::DiscoverEval { workspace } => {
+            let workspace = absolutize(&workspace)?;
+            let store = loopsmith_core::discovery::WorkspaceDiscoveryStore::new(&workspace);
+            let report = evaluate_discovery_store(&store)?;
+            let report_path = discovery_quality_report_path(&store);
+            save_discovery_quality_report(&store, &report)?;
+            println!("{}", print_discovery_quality_report(&report_path, &report));
+            if report.gate == DiscoveryQualityGate::Fail {
+                process::exit(2);
+            }
+        }
+    }
+
+    Ok(())
 }
 
-impl PlannerRoutedWorker {
-    fn new(planner: Box<dyn WorkerAdapter>, default: Box<dyn WorkerAdapter>) -> Self {
-        Self { planner, default }
-    }
+fn launch_gui() -> Result<()> {
+    println!("launching LoopSmith GUI...");
+    // TODO: integrate Tauri GUI launch here
+    // For now, this is a placeholder. The actual implementation will
+    // spawn the Tauri window from the loopsmith-gui binary/crate.
+    Ok(())
 }
 
-#[async_trait]
-impl WorkerAdapter for PlannerRoutedWorker {
-    async fn plan(
-        &self,
-        context: &WorkerContext,
-        artifacts: &StageArtifactSet,
-        request: &harness_core::domain::PlanningRequest,
-    ) -> Result<harness_core::domain::WorkerResult> {
-        self.planner.plan(context, artifacts, request).await
+fn resolve_config(explicit: Option<PathBuf>) -> Result<PathBuf> {
+    match explicit {
+        Some(path) => absolutize(&path),
+        None => setup::default_config_path(),
     }
-
-    async fn build(
-        &self,
-        context: &WorkerContext,
-        feature: &FeatureLayout,
-        artifacts: &StageArtifactSet,
-        contract: &FeatureContract,
-    ) -> Result<harness_core::domain::WorkerResult> {
-        self.default
-            .build(context, feature, artifacts, contract)
-            .await
-    }
-
-    async fn evaluate(
-        &self,
-        context: &WorkerContext,
-        feature: &FeatureLayout,
-        artifacts: &StageArtifactSet,
-        request: &EvaluationRequest,
-    ) -> Result<harness_core::domain::WorkerResult> {
-        self.default
-            .evaluate(context, feature, artifacts, request)
-            .await
-    }
-
-    async fn repair(
-        &self,
-        context: &WorkerContext,
-        feature: &FeatureLayout,
-        artifacts: &StageArtifactSet,
-        contract: &FeatureContract,
-        builder_handoff: &BuilderHandoff,
-        qa_report: &QaReport,
-        previous_session_id: Option<&str>,
-    ) -> Result<harness_core::domain::WorkerResult> {
-        self.default
-            .repair(
-                context,
-                feature,
-                artifacts,
-                contract,
-                builder_handoff,
-                qa_report,
-                previous_session_id,
-            )
-            .await
-    }
-}
-
-fn build_worker_from_planner_config(
-    config: &PlannerWorkerConfig,
-) -> Result<Box<dyn WorkerAdapter>> {
-    build_worker_from_selection(
-        config.kind,
-        config.codex.as_ref(),
-        config.simulation.as_ref(),
-    )
-}
-
-fn build_worker_from_selection(
-    kind: WorkerKind,
-    codex: Option<&CodexWorkerConfig>,
-    simulation: Option<&SimulationWorkerConfig>,
-) -> Result<Box<dyn WorkerAdapter>> {
-    Ok(match kind {
-        WorkerKind::CodexCli => Box::new(CodexCliWorker::new(
-            codex
-                .context("codex worker config missing for selected worker")?
-                .clone(),
-        )),
-        WorkerKind::Simulated => Box::new(SimulatedWorker::new(
-            simulation
-                .context("simulation worker config missing for selected worker")?
-                .clone(),
-        )),
-    })
 }
 
 fn print_run_state(state: &RunState) {
@@ -241,6 +225,13 @@ fn print_run_state(state: &RunState) {
     println!("run_root: {}", state.run_root.display());
     println!("state_file: {}", state.state_file.display());
     println!("manifest: {}", state.manifest_file.display());
+    println!(
+        "launch: {}",
+        state
+            .launch_file
+            .as_ref()
+            .map_or_else(|| "-".to_string(), |path| path.display().to_string())
+    );
     println!("request: {}", state.request_file.display());
     println!("plan: {}", state.plan_file.display());
     println!("runtime_plan: {}", state.runtime_plan_file.display());
@@ -255,6 +246,15 @@ fn print_run_state(state: &RunState) {
         state.final_status.map_or("-", |status| status.as_str())
     );
     println!("current_feature_index: {}", state.current_feature_index);
+    if let Some(active_stage) = &state.active_stage {
+        println!(
+            "active_stage: stage={} attempt={} feature={} since={}",
+            active_stage.stage.as_str(),
+            active_stage.attempt,
+            active_stage.feature_id.as_deref().unwrap_or("-"),
+            active_stage.started_at.to_rfc3339(),
+        );
+    }
 
     if let Some(plan_stage) = &state.plan_stage {
         println!(
@@ -292,14 +292,77 @@ fn print_run_state(state: &RunState) {
     }
 }
 
-fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::new(
-            "info,harness_core=info,harness_worker_codex=info,harness_worker_simulated=info",
-        )
-    });
+fn print_discovery_selection(
+    selection: &WorkspaceProfileSelection,
+    payload: Option<&WorkspaceDiscoveryPayload>,
+) {
+    println!("workspace: {}", selection.profile.workspace_path.display());
+    println!(
+        "discovery_root: {}",
+        selection
+            .canonical_profile_path
+            .parent()
+            .map_or_else(|| "-".to_string(), |path| path.display().to_string())
+    );
+    println!("scan: {}", selection.scan_path.display());
+    println!("evidence: {}", selection.evidence_path.display());
+    println!("inference: {}", selection.inference_path.display());
+    println!("profile: {}", selection.canonical_profile_path.display());
+    println!("status: {}", selection.status_path.display());
+    println!(
+        "phase: {}",
+        payload
+            .map(|item| discovery_phase_str(item.status.current_phase))
+            .unwrap_or("unknown")
+    );
+    println!("workspace_fingerprint: {}", selection.workspace_fingerprint);
+    println!("profile_fingerprint: {}", selection.profile_fingerprint);
+    println!(
+        "last_scanned_at: {}",
+        selection.last_scanned_at.to_rfc3339()
+    );
+    println!(
+        "last_refreshed_at: {}",
+        selection.last_refreshed_at.to_rfc3339()
+    );
+    println!("used_fallback_profile: {}", selection.used_fallback_profile);
+    println!(
+        "refresh_error: {}",
+        selection.refresh_error.as_deref().unwrap_or("-")
+    );
+    println!("summary: {}", selection.profile.summary);
 
-    fmt().with_env_filter(filter).with_target(false).init();
+    if let Some(payload) = payload {
+        println!(
+            "inference_summary: {}",
+            payload.inference_summary.as_deref().unwrap_or("-")
+        );
+        println!("source_files: {}", payload.overview.source_file_count);
+        println!("repositories: {}", payload.overview.repository_count);
+        println!("api_contracts: {}", payload.overview.api_contract_count);
+        println!("layer_rules: {}", payload.overview.layering_rules.len());
+        println!("inferences: {}", payload.overview.inference_count);
+        println!(
+            "average_inference_confidence: {}",
+            payload
+                .overview
+                .average_inference_confidence
+                .map(|value| format!("{value:.2}"))
+                .unwrap_or_else(|| "-".to_string())
+        );
+    }
+}
+
+fn discovery_phase_str(phase: WorkspaceDiscoveryPhase) -> &'static str {
+    match phase {
+        WorkspaceDiscoveryPhase::Idle => "idle",
+        WorkspaceDiscoveryPhase::Scanning => "scanning",
+        WorkspaceDiscoveryPhase::ReusingCachedProfile => "reusing_cached_profile",
+        WorkspaceDiscoveryPhase::Polishing => "polishing",
+        WorkspaceDiscoveryPhase::UsingFallbackProfile => "using_fallback_profile",
+        WorkspaceDiscoveryPhase::Ready => "ready",
+        WorkspaceDiscoveryPhase::Failed => "failed",
+    }
 }
 
 fn absolutize(path: &Path) -> Result<PathBuf> {

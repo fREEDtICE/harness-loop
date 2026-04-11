@@ -1,0 +1,19 @@
+[package]
+name = "loopsmith-gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+chrono.workspace = true
+rfd = "0.15"
+serde.workspace = true
+tauri = { version = "2", features = [] }
+tracing.workspace = true
+loopsmith-core = { path = "../../../crates/harness-core" }
+loopsmith-desktop-shell = { path = "../../../crates/harness-desktop-shell" }
+loopsmith-orchestration = { path = "../../../crates/loopsmith-orchestration" }

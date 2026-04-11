@@ -1,0 +1,34 @@
+{
+  "name": "harness-ui-app",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 1420",
+    "build": "tsc && vite build",
+    "test:discovery-ui-contract": "node --test scripts/discovery-ui-contract.test.mjs",
+    "test:pending-launch-contract": "node --test scripts/pending-launch-contract.test.mjs",
+    "test:run-detail-streaming": "node --test scripts/run-detail-log-streaming.test.mjs",
+    "test:run-selection-freshness": "node --test scripts/run-selection-freshness.test.mjs",
+    "verify:setup-wizard-contract": "node scripts/verify-setup-wizard-contract.mjs",
+    "preview": "vite preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@mdxeditor/editor": "^3.53.1",
+    "@tauri-apps/api": "^2.0.0",
+    "i18next": "^26.0.2",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-i18next": "^17.0.1",
+    "smol-toml": "^1.6.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  }
+}

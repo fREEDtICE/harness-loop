@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "jsx": "react-jsx",
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "outDir": "./.compiled/discovery-ui",
+    "rootDir": "../src"
+  },
+  "include": [
+    "../src/DiscoveryStatusPanel.tsx",
+    "../src/WorkspaceTimeline.tsx",
+    "../src/discoveryPhasePresentation.ts",
+    "../src/pendingLaunch.ts",
+    "../src/utils.ts",
+    "../src/types.ts",
+    "../src/i18n/index.ts",
+    "../src/i18n/en.json",
+    "../src/i18n/zh.json"
+  ]
+}

@@ -1016,6 +1016,8 @@ mod tests {
         let config = RuntimeConfig {
             feature_limit: 1,
             max_repair_attempts: 1,
+            continue_after_failure: false,
+            confirm_before_build: false,
             supervision: RuntimeSupervisionConfig {
                 enabled: true,
                 startup_timeout_secs: 5,

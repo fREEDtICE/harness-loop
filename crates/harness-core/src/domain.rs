@@ -4,19 +4,114 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::discovery::{RunWorkspaceProfileSnapshot, WorkspaceProfileSelection};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunRequest {
     pub user_request: String,
     pub source_workspace: PathBuf,
     pub feature_limit: Option<usize>,
+    #[serde(default)]
+    pub confirm_before_build: bool,
+    #[serde(default)]
+    pub selected_config: Option<PathBuf>,
+    #[serde(default)]
+    pub prompt_overrides: PromptOverrides,
+    #[serde(default)]
+    pub workspace_profile: Option<WorkspaceProfileSelection>,
+}
+
+/// Optional per-run prompt overrides supplied by the launcher UI.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct PromptOverrides {
+    pub planner: Option<String>,
+    pub builder: Option<String>,
+    pub evaluator: Option<String>,
+}
+
+/// Effective prompt texts snapshotted into a run at launch time.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PromptSnapshot {
+    pub planner: String,
+    pub builder: String,
+    pub evaluator: String,
+}
+
+/// Durable launch inputs for a single run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunLaunchSnapshot {
+    pub source_workspace: PathBuf,
+    pub selected_config: Option<PathBuf>,
+    pub config_contents: Option<String>,
+    pub requested_feature_limit: Option<usize>,
+    pub effective_feature_limit: usize,
+    pub feature_limit_is_hard: bool,
+    #[serde(default)]
+    pub confirm_before_build: bool,
+    pub user_request: String,
+    pub prompts: PromptSnapshot,
+    #[serde(default)]
+    pub workspace_profile: Option<RunWorkspaceProfileSnapshot>,
+    pub launched_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanningRequest {
     pub user_request: String,
     pub feature_limit: usize,
+    pub feature_limit_is_hard: bool,
     pub service_names: Vec<String>,
     pub verification_commands: Vec<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlannerConversationRole {
+    User,
+    Planner,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlannerConversationTurn {
+    pub role: PlannerConversationRole,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlannerConversationRequest {
+    pub request_draft: String,
+    pub feature_limit: Option<usize>,
+    #[serde(default)]
+    pub conversation: Vec<PlannerConversationTurn>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlannerConversationReadiness {
+    NeedsClarification,
+    ReadyToPlan,
+    ReadyToBuild,
+}
+
+impl PlannerConversationReadiness {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NeedsClarification => "needs_clarification",
+            Self::ReadyToPlan => "ready_to_plan",
+            Self::ReadyToBuild => "ready_to_build",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlannerConversationResponse {
+    pub reply_markdown: String,
+    pub revised_request: String,
+    pub readiness: PlannerConversationReadiness,
+    pub open_questions: Vec<String>,
+    pub suggested_features: Vec<String>,
+    pub suggested_feature_limit: Option<usize>,
+    pub confirmation_points: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -299,7 +394,34 @@ pub struct RunStageRecord {
     pub attempt: usize,
     pub status: WorkerStatus,
     pub artifact: PathBuf,
+    #[serde(default)]
+    pub stdout_log: PathBuf,
+    #[serde(default)]
+    pub stderr_log: PathBuf,
     pub session_id: Option<String>,
+}
+
+impl RunStageRecord {
+    pub fn backfill_log_paths(&mut self) {
+        if !self.stdout_log.as_os_str().is_empty() {
+            return;
+        }
+        if let Some(worker_dir) = self.artifact.parent() {
+            let stem = format!("{}-{:02}", self.stage.as_str(), self.attempt);
+            self.stdout_log = worker_dir.join("logs").join(format!("{stem}-stdout.log"));
+            self.stderr_log = worker_dir.join("logs").join(format!("{stem}-stderr.log"));
+        }
+    }
+}
+
+/// The stage currently executing when the harness checkpoints mid-run.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ActiveRunStage {
+    pub stage: WorkerStage,
+    pub attempt: usize,
+    pub feature_index: Option<usize>,
+    pub feature_id: Option<String>,
+    pub started_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -323,11 +445,15 @@ pub struct FeatureRunState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunState {
     pub run_id: Uuid,
+    #[serde(default)]
+    pub run_title: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub run_root: PathBuf,
     pub state_file: PathBuf,
     pub manifest_file: PathBuf,
+    #[serde(default)]
+    pub launch_file: Option<PathBuf>,
     pub request_file: PathBuf,
     pub plan_file: PathBuf,
     pub runtime_plan_file: PathBuf,
@@ -336,8 +462,25 @@ pub struct RunState {
     pub lifecycle: RunLifecycleStatus,
     pub final_status: Option<QaStatus>,
     pub current_feature_index: usize,
+    #[serde(default)]
+    pub awaiting_feature_confirmation: bool,
+    #[serde(default)]
+    pub active_stage: Option<ActiveRunStage>,
     pub plan_stage: Option<RunStageRecord>,
     pub features: Vec<FeatureRunState>,
+}
+
+impl RunState {
+    pub fn backfill_log_paths(&mut self) {
+        if let Some(ref mut plan) = self.plan_stage {
+            plan.backfill_log_paths();
+        }
+        for feature in &mut self.features {
+            for stage in &mut feature.stages {
+                stage.backfill_log_paths();
+            }
+        }
+    }
 }
 
 impl PlanningRequest {
@@ -350,10 +493,14 @@ impl PlanningRequest {
             .trim()
             .to_string();
         let feature_limit = self.feature_limit.max(1);
-        let (slice_descriptions, explicit_slice_count) =
-            self.derive_feature_slices(&goal, feature_limit);
+        let (slice_descriptions, explicit_slice_count) = self.derive_feature_slices(&goal);
+        let features = if self.feature_limit_is_hard {
+            self.enforce_feature_limit(slice_descriptions, &goal, feature_limit)
+        } else {
+            slice_descriptions
+        };
 
-        let features = slice_descriptions
+        let features = features
             .iter()
             .enumerate()
             .map(|(index, slice)| Feature {
@@ -380,7 +527,7 @@ impl PlanningRequest {
         }
     }
 
-    fn derive_feature_slices(&self, goal: &str, feature_limit: usize) -> (Vec<String>, usize) {
+    fn derive_feature_slices(&self, goal: &str) -> (Vec<String>, usize) {
         let lines = self
             .user_request
             .lines()
@@ -412,14 +559,22 @@ impl PlanningRequest {
             slices.push(goal.to_string());
         }
 
-        let explicit_slice_count = slices.len().min(feature_limit);
+        let explicit_slice_count = slices.len();
+        (slices, explicit_slice_count)
+    }
 
+    fn enforce_feature_limit(
+        &self,
+        mut slices: Vec<String>,
+        goal: &str,
+        feature_limit: usize,
+    ) -> Vec<String> {
         while slices.len() < feature_limit {
             slices.push(self.follow_up_slice(slices.len() + 1, goal));
         }
 
         slices.truncate(feature_limit);
-        (slices, explicit_slice_count)
+        slices
     }
 
     fn follow_up_slice(&self, sequence: usize, goal: &str) -> String {
@@ -497,7 +652,7 @@ impl PlanningRequest {
             ));
         }
 
-        if explicit_slice_count < feature_limit {
+        if self.feature_limit_is_hard && explicit_slice_count < feature_limit {
             risks.push(
                 "The request does not spell out enough independent slices for the requested feature limit, so later features are planner-derived follow-ups."
                     .to_string(),
@@ -541,17 +696,130 @@ impl PlanningRequest {
     }
 }
 
+impl PlannerConversationRequest {
+    pub fn synthesize_response(&self) -> PlannerConversationResponse {
+        let trimmed_request = normalized_request(&self.request_draft);
+        let feature_limit = self.feature_limit.unwrap_or(3).max(1);
+        let planning_request = PlanningRequest {
+            user_request: if trimmed_request.is_empty() {
+                self.conversation
+                    .iter()
+                    .filter(|turn| turn.role == PlannerConversationRole::User)
+                    .map(|turn| turn.content.trim())
+                    .filter(|content| !content.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            } else {
+                trimmed_request.clone()
+            },
+            feature_limit,
+            feature_limit_is_hard: self.feature_limit.is_some(),
+            service_names: Vec::new(),
+            verification_commands: Vec::new(),
+        };
+        let synthesized_plan = if planning_request.user_request.trim().is_empty() {
+            None
+        } else {
+            Some(planning_request.synthesize_plan())
+        };
+        let latest_user_message = self
+            .conversation
+            .iter()
+            .rev()
+            .find(|turn| turn.role == PlannerConversationRole::User)
+            .map(|turn| turn.content.trim())
+            .filter(|content| !content.is_empty());
+        let readiness = if trimmed_request.is_empty() {
+            PlannerConversationReadiness::NeedsClarification
+        } else if self.feature_limit.is_some() {
+            PlannerConversationReadiness::ReadyToBuild
+        } else {
+            PlannerConversationReadiness::ReadyToPlan
+        };
+
+        let reply_markdown = if trimmed_request.is_empty() {
+            "Start by describing the requested outcome, the user-facing behavior you expect, and any hard constraints the planner must preserve.".to_string()
+        } else if let Some(question) = latest_user_message {
+            format!(
+                "I used the current request draft as the source of truth and folded in your latest question:\n\n> {}\n\nThe scope is ready for planning. Review the suggested feature slices and confirm the ones that should enter build.",
+                question
+            )
+        } else {
+            "The current request draft is specific enough to plan. Review the proposed feature slices and tighten any acceptance criteria that still feel ambiguous.".to_string()
+        };
+
+        let suggested_features = synthesized_plan
+            .as_ref()
+            .map(|plan| {
+                plan.features
+                    .iter()
+                    .map(|feature| feature.title.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let confirmation_points = synthesized_plan
+            .as_ref()
+            .map(|plan| {
+                plan.features
+                    .iter()
+                    .flat_map(|feature| feature.acceptance_criteria.iter().cloned())
+                    .take(4)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_else(|| {
+                vec![
+                    "Clarify the user-visible outcome.".to_string(),
+                    "Name the files, routes, or modules most likely to change.".to_string(),
+                ]
+            });
+        let open_questions = if trimmed_request.is_empty() {
+            vec![
+                "What user journey should this change improve?".to_string(),
+                "What must the planner avoid touching?".to_string(),
+            ]
+        } else {
+            synthesized_plan
+                .as_ref()
+                .map(|plan| plan.risks.iter().take(3).cloned().collect::<Vec<_>>())
+                .unwrap_or_default()
+        };
+
+        PlannerConversationResponse {
+            reply_markdown,
+            revised_request: if trimmed_request.is_empty() {
+                latest_user_message.unwrap_or_default().to_string()
+            } else {
+                trimmed_request
+            },
+            readiness,
+            open_questions,
+            suggested_features,
+            suggested_feature_limit: Some(feature_limit),
+            confirmation_points,
+        }
+    }
+}
+
 impl FeatureContract {
-    pub fn from_feature(feature: &Feature, verification_commands: &[Vec<String>]) -> Self {
+    pub fn from_feature(
+        feature: &Feature,
+        verification_commands: &[Vec<String>],
+        workspace_profile: Option<&crate::discovery::WorkspaceProfile>,
+    ) -> Self {
+        let mut scope_notes = vec![
+            "Keep the control loop outside the worker process.".to_string(),
+            "Treat artifacts on disk as the durable source of truth.".to_string(),
+            "Favor restartable sessions over excessively long, fragile context windows."
+                .to_string(),
+        ];
+        if let Some(profile) = workspace_profile {
+            scope_notes.extend(profile.contract_scope_notes());
+        }
+
         Self {
             feature_id: feature.id.clone(),
             title: feature.title.clone(),
-            scope_notes: vec![
-                "Keep the control loop outside the worker process.".to_string(),
-                "Treat artifacts on disk as the durable source of truth.".to_string(),
-                "Favor restartable sessions over excessively long, fragile context windows."
-                    .to_string(),
-            ],
+            scope_notes,
             acceptance_criteria: feature.acceptance_criteria.clone(),
             verification_commands: verification_commands.to_vec(),
         }
@@ -674,6 +942,7 @@ mod tests {
         let plan = PlanningRequest {
             user_request: "Build a harness".to_string(),
             feature_limit: 2,
+            feature_limit_is_hard: true,
             service_names: Vec::new(),
             verification_commands: Vec::new(),
         }
@@ -689,6 +958,7 @@ mod tests {
             user_request: "Ship the auth flow\n- Add signup form\n- Add email verification\n"
                 .to_string(),
             feature_limit: 2,
+            feature_limit_is_hard: true,
             service_names: vec!["web".to_string()],
             verification_commands: vec![vec!["cargo".to_string(), "test".to_string()]],
         }
@@ -704,6 +974,7 @@ mod tests {
         let plan = PlanningRequest {
             user_request: "Build the settings page".to_string(),
             feature_limit: 1,
+            feature_limit_is_hard: true,
             service_names: Vec::new(),
             verification_commands: vec![vec!["/usr/bin/env".to_string(), "true".to_string()]],
         }
@@ -719,6 +990,29 @@ mod tests {
                 .acceptance_criteria
                 .iter()
                 .any(|criterion| criterion.contains("Replace placeholder verification"))
+        );
+    }
+
+    #[test]
+    fn synthesized_plan_treats_non_hard_feature_limit_as_advisory() {
+        let plan = PlanningRequest {
+            user_request: "Ship the auth flow\n- Add signup form\n- Add email verification\n"
+                .to_string(),
+            feature_limit: 1,
+            feature_limit_is_hard: false,
+            service_names: vec!["web".to_string()],
+            verification_commands: vec![vec!["cargo".to_string(), "test".to_string()]],
+        }
+        .synthesize_plan();
+
+        assert_eq!(plan.features.len(), 2);
+        assert_eq!(plan.features[0].title, "Add signup form");
+        assert_eq!(plan.features[1].title, "Add email verification");
+        assert!(
+            !plan
+                .risks
+                .iter()
+                .any(|risk| risk.contains("planner-derived follow-ups"))
         );
     }
 }

@@ -2,7 +2,7 @@
 root_dir = ".."
 
 [storage]
-runs_dir = ".runs"
+runs_dir = ".loopsmith-runs"
 
 [workspace]
 isolation = "git_worktree"
@@ -28,18 +28,25 @@ resume_sessions = true
 # session_prefix = "planner-simulated"
 
 [prompts]
+discovery = "prompts/discovery.md"
 planner = "prompts/planner.md"
 builder = "prompts/builder.md"
 evaluator = "prompts/evaluator.md"
 
 [schemas]
+workspace_profile = "schemas/workspace-profile.json"
+workspace_inference = "schemas/workspace-inference.json"
 planner_output = "schemas/planner-output.json"
 builder_handoff = "schemas/builder-handoff.json"
 qa_report = "schemas/qa-report.json"
 
 [runtime]
+# Advisory planner slice count. Use `--feature-limit` for a hard per-run cap.
 feature_limit = 3
 max_repair_attempts = 2
+# When true, a failed feature does not stop the run; remaining features continue.
+# resume will also continue past previously failed features.
+continue_after_failure = false
 
 [runtime.supervision]
 enabled = true

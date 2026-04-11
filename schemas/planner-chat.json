@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Planner Consultation Response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "reply_markdown",
+    "revised_request",
+    "readiness",
+    "open_questions",
+    "suggested_features",
+    "suggested_feature_limit",
+    "confirmation_points"
+  ],
+  "properties": {
+    "reply_markdown": {
+      "type": "string",
+      "minLength": 1
+    },
+    "revised_request": {
+      "type": "string"
+    },
+    "readiness": {
+      "type": "string",
+      "enum": [
+        "needs_clarification",
+        "ready_to_plan",
+        "ready_to_build"
+      ]
+    },
+    "open_questions": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "suggested_features": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "suggested_feature_limit": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1
+    },
+    "confirmation_points": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

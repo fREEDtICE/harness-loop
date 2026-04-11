@@ -2,7 +2,7 @@
 root_dir = ".."
 
 [storage]
-runs_dir = ".runs"
+runs_dir = ".loopsmith-runs"
 
 [workspace]
 isolation = "direct"
@@ -28,16 +28,20 @@ session_prefix = "simulated"
 # resume_sessions = true
 
 [prompts]
+discovery = "prompts/discovery.md"
 planner = "prompts/planner.md"
 builder = "prompts/builder.md"
 evaluator = "prompts/evaluator.md"
 
 [schemas]
+workspace_profile = "schemas/workspace-profile.json"
+workspace_inference = "schemas/workspace-inference.json"
 planner_output = "schemas/planner-output.json"
 builder_handoff = "schemas/builder-handoff.json"
 qa_report = "schemas/qa-report.json"
 
 [runtime]
+# Advisory planner slice count. Use `--feature-limit` for a hard per-run cap.
 feature_limit = 1
 max_repair_attempts = 1
 
