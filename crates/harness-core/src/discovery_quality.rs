@@ -252,7 +252,7 @@ pub fn evaluate_discovery_artifacts(
             severity: DiscoveryQualitySeverity::Error,
             code: "confidence_ten_policy_violation".to_string(),
             message: format!(
-                "{} inference(s) used confidence 10 without exactly one strong evidence chain.",
+                "{} inference(s) used confidence 10 without any strong evidence chain.",
                 confidence_ten_policy_violations
             ),
             related_paths: Vec::new(),
@@ -262,12 +262,9 @@ pub fn evaluate_discovery_artifacts(
                         .iter()
                         .filter(|inference| {
                             inference.confidence == 10
-                                && !matches!(
-                                    inference.evidence_chains.as_slice(),
-                                    [chain]
-                                        if chain.strength
-                                            == DiscoveryEvidenceChainStrength::Strong
-                                )
+                                && !inference.evidence_chains.iter().any(|chain| {
+                                    chain.strength == DiscoveryEvidenceChainStrength::Strong
+                                })
                         })
                         .map(|item| item.id.clone())
                         .collect()
@@ -543,7 +540,7 @@ fn build_recommendations(findings: &[DiscoveryQualityFinding]) -> Vec<String> {
                 "Downgrade unsupported claims to ambiguities or add explicit evidence before allowing them into the profile."
             }
             "confidence_ten_policy_violation" => {
-                "Restrict confidence 10 to exactly one strong evidence chain and downgrade the rest."
+                "Restrict confidence 10 to inferences with at least one strong evidence chain and downgrade the rest."
             }
             "low_governance_density" | "missing_project_intent" => {
                 "Increase discovery coverage for goals, specs, contracts, and E2E signals so high-negentropy artifacts govern code-level context."
@@ -673,10 +670,10 @@ fn count_confidence_ten_policy_violations(inference: &WorkspaceDiscoveryInferenc
         .iter()
         .filter(|entry| {
             entry.confidence == 10
-                && !matches!(
-                    entry.evidence_chains.as_slice(),
-                    [chain] if chain.strength == DiscoveryEvidenceChainStrength::Strong
-                )
+                && !entry
+                    .evidence_chains
+                    .iter()
+                    .any(|chain| chain.strength == DiscoveryEvidenceChainStrength::Strong)
         })
         .count()
 }

@@ -555,9 +555,10 @@ async fn refresh_workspace_profile(
         let result = worker.discover(&context, &artifacts, &request).await?;
         let bytes = fs::read(&artifacts.output_file)
             .with_context(|| format!("failed to read {}", artifacts.output_file.display()))?;
-        let (inference, profile) = parse_discovery_worker_output(&bytes, &scan)
+        let (mut inference, profile) = parse_discovery_worker_output(&bytes, &scan)
             .with_context(|| format!("failed to parse {}", artifacts.output_file.display()))?;
         inference.validate(&scan)?;
+        inference.downgrade_unsupported_layer_rules(&scan);
         let profile_fingerprint = profile_fingerprint(&profile)?;
         store.save_inference(&inference)?;
         store.save_profile(&profile)?;

@@ -849,6 +849,18 @@ impl WorkspaceDiscoveryInference {
         Ok(())
     }
 
+    pub fn downgrade_unsupported_layer_rules(&mut self, evidence: &WorkspaceDiscoveryEvidence) {
+        let evidence_has_directions = !evidence.layering.allowed_dependency_directions.is_empty();
+        if evidence_has_directions {
+            return;
+        }
+        for inference in &mut self.inferences {
+            if inference.category == "layering_rule" {
+                inference.category = "layering".to_string();
+            }
+        }
+    }
+
     pub fn assemble_profile(&self, evidence: &WorkspaceDiscoveryEvidence) -> WorkspaceProfile {
         let mut profile = synthesize_profile_from_evidence(evidence);
 
@@ -888,8 +900,19 @@ impl WorkspaceDiscoveryInference {
             .filter(|inference| inference.category == "layering_rule")
             .map(|item| item.statement.clone())
             .collect::<Vec<_>>();
+        let evidence_has_explicit_directions =
+            !evidence.layering.allowed_dependency_directions.is_empty();
         if !inferred_rules.is_empty() {
-            layering.allowed_dependency_directions = inferred_rules;
+            if evidence_has_explicit_directions {
+                layering.allowed_dependency_directions = inferred_rules;
+            } else {
+                for rule in inferred_rules {
+                    layering.unresolved_ambiguities.push(format!(
+                        "Inferred but unproven dependency rule: {}",
+                        rule
+                    ));
+                }
+            }
         }
         let inferred_ambiguities = self
             .inferences
@@ -1323,7 +1346,7 @@ fn consolidate_facts(facts: &[DiscoveryFact]) -> Vec<DiscoveryFact> {
         if entry.summary.is_empty() {
             entry.summary = fact.summary.clone();
         } else if entry.summary != fact.summary && entry.summary.len() < 512 {
-            entry.summary = format!("{} | {}", entry.summary, fact.summary);
+            entry.summary = merge_summaries(&entry.summary, &fact.summary);
         }
         for path in &fact.evidence {
             if !entry.evidence.contains(path) && entry.evidence.len() < 6 {
@@ -1334,6 +1357,27 @@ fn consolidate_facts(facts: &[DiscoveryFact]) -> Vec<DiscoveryFact> {
     let mut result: Vec<DiscoveryFact> = by_title.into_values().collect();
     result.sort_by(|a, b| a.tier.cmp(&b.tier).then_with(|| a.title.cmp(&b.title)));
     result
+}
+
+fn merge_summaries(existing: &str, incoming: &str) -> String {
+    let prefix = "Detected crates/frameworks: ";
+    if existing.starts_with(prefix) && incoming.starts_with(prefix) {
+        let mut seen = std::collections::BTreeSet::new();
+        let extract = |s: &str| {
+            s[prefix.len()..]
+                .trim_end_matches('.')
+                .split(',')
+                .map(|seg| seg.trim().to_string())
+                .filter(|seg| !seg.is_empty())
+                .collect::<Vec<_>>()
+        };
+        for name in extract(existing).into_iter().chain(extract(incoming)) {
+            seen.insert(name);
+        }
+        format!("{}{}.", prefix, seen.into_iter().collect::<Vec<_>>().join(", "))
+    } else {
+        format!("{} | {}", existing, incoming)
+    }
 }
 
 fn tier_sorted_clone(facts: &[DiscoveryFact]) -> Vec<DiscoveryFact> {
@@ -1446,6 +1490,45 @@ impl WorkspaceDiscoveryScan {
                 .map(|item| item.id.clone())
                 .filter(|id| !id.is_empty()),
         );
+        if !self.change_boundaries.frozen_paths.is_empty() {
+            ids.insert("scan.change_boundaries.frozen_paths".to_string());
+        }
+        if !self.change_boundaries.high_risk_paths.is_empty() {
+            ids.insert("scan.change_boundaries.high_risk_paths".to_string());
+        }
+        let section_ids: &[&str] = &[
+            "layering",
+            "dependency_relationships",
+            "tech_stack",
+            "api_contracts",
+            "user_journeys",
+            "e2e_test_cases",
+            "auth",
+            "coding_conventions",
+            "commands",
+            "project_intent",
+            "environment_requirements",
+            "change_boundaries",
+        ];
+        for base in section_ids {
+            ids.insert(base.to_string());
+            ids.insert(format!("scan.{}", base));
+        }
+        let sub_ids = [
+            "layering.summary",
+            "layering.layers",
+            "layering.allowed_dependency_directions",
+            "layering.unresolved_ambiguities",
+            "change_boundaries.frozen_paths",
+            "change_boundaries.high_risk_paths",
+            "commands.build",
+            "commands.test",
+            "commands.dev",
+        ];
+        for sub in &sub_ids {
+            ids.insert(sub.to_string());
+            ids.insert(format!("scan.{}", sub));
+        }
         ids
     }
 
@@ -2425,15 +2508,20 @@ fn detect_auth(rel: &Path, text: &str, output: &mut Vec<DiscoveryFact>) {
         .iter()
         .any(|keyword| lower_text.contains(keyword));
 
-    let contextual_match = if !strong_path_match && !strong_content_match {
+    let auth_adjacent = [
+        "login", "logout", "credential", "password", "authenticate", "authorize",
+        "permission", "rbac", "acl", "signup", "sign_in", "sign_out",
+    ];
+    let has_auth_adjacent = auth_adjacent
+        .iter()
+        .any(|kw| lower_text.contains(kw));
+
+    let contextual_match = if !strong_path_match && !strong_content_match && has_auth_adjacent {
         contextual_keywords.iter().any(|keyword| {
-            let in_content = lower_text.contains(&format!("{}auth", keyword))
-                || lower_text.contains(&format!("auth{}", keyword))
-                || lower_text.contains(&format!("{}_id", keyword))
-                || lower_text.contains(&format!("access_{}", keyword))
+            lower_text.contains(&format!("access_{}", keyword))
                 || lower_text.contains(&format!("refresh_{}", keyword))
-                || lower_text.contains(&format!("bearer_{}", keyword));
-            in_content
+                || lower_text.contains(&format!("bearer_{}", keyword))
+                || lower_text.contains(&format!("auth_{}", keyword))
         })
     } else {
         false
@@ -3076,16 +3164,14 @@ fn summarize_module_exports(rel: &Path, text: &str) -> Option<String> {
 }
 
 fn summarize_http_routes(text: &str) -> Option<String> {
+    let method_with_path = [".get(\"/", ".post(\"/", ".put(\"/", ".delete(\"/", ".patch(\"/"];
     let mut routes = Vec::new();
     for line in text.lines() {
         let trimmed = line.trim();
-        if trimmed.contains(".get(")
-            || trimmed.contains(".post(")
-            || trimmed.contains(".put(")
-            || trimmed.contains(".delete(")
+        let is_route = method_with_path.iter().any(|pat| trimmed.contains(pat))
             || trimmed.contains("route(\"/")
-            || trimmed.contains("axum::routing::")
-        {
+            || trimmed.contains("axum::routing::");
+        if is_route {
             routes.push(trimmed.to_string());
         }
         if routes.len() >= 3 {
@@ -3178,8 +3264,8 @@ fn build_layering_profile(layers: BTreeMap<String, BTreeSet<PathBuf>>) -> Layeri
 }
 
 fn dedupe_facts(items: &mut Vec<DiscoveryFact>) {
-    let mut seen = BTreeSet::new();
-    items.retain(|item| seen.insert((item.title.clone(), item.summary.clone())));
+    let consolidated = consolidate_facts(items);
+    *items = consolidated;
 }
 
 fn dedupe_commands(commands: &mut CommandCatalog) {
@@ -3190,13 +3276,7 @@ fn dedupe_commands(commands: &mut CommandCatalog) {
 
 fn dedupe_command_list(commands: &mut Vec<DetectedCommand>) {
     let mut seen = BTreeSet::new();
-    commands.retain(|command| {
-        seen.insert((
-            command.label.clone(),
-            command.command.clone(),
-            command.source.clone(),
-        ))
-    });
+    commands.retain(|command| seen.insert(command.command.clone()));
 }
 
 fn dedupe_relationships(relationships: &mut Vec<DependencyRelationship>) {
@@ -3278,10 +3358,10 @@ mod tests {
     use super::{
         ChangeBoundaryProfile, CommandCatalog, DetectedCommand, DiscoveryEvidenceChain,
         DiscoveryEvidenceChainStrength, DiscoveryFact, DiscoveryInference, LayeringProfile,
-        WorkspaceDiscoveryInference, WorkspaceDiscoveryOverview, WorkspaceDiscoveryPhase,
-        WorkspaceDiscoveryRequest, WorkspaceDiscoveryScan, WorkspaceDiscoveryStatus,
-        WorkspaceDiscoveryStore, profile_fingerprint, scan_workspace,
-        synthesize_profile_from_evidence,
+        NegentropyTier, WorkspaceDiscoveryInference, WorkspaceDiscoveryOverview,
+        WorkspaceDiscoveryPhase, WorkspaceDiscoveryRequest, WorkspaceDiscoveryScan,
+        WorkspaceDiscoveryStatus, WorkspaceDiscoveryStore, consolidate_facts, profile_fingerprint,
+        scan_workspace, summarize_http_routes, synthesize_profile_from_evidence,
     };
     use crate::worker::{DiscoveryContext, render_discovery_prompt};
     use chrono::{Duration, Utc};
@@ -4148,6 +4228,86 @@ mod tests {
         assert!(
             context.contains("environment_requirements"),
             "should contain environment_requirements section"
+        );
+    }
+
+    #[test]
+    fn http_routes_ignore_generic_get_calls() {
+        let rust_code = r#"
+            if let Some(id) = value.get("session_id").and_then(Value::as_str) {
+                session_id = Some(id.to_string());
+            }
+            let kind = value.get("type")?.as_str()?;
+            .get(attempt.saturating_sub(1))
+            localStorageState.get(key)
+        "#;
+        assert!(
+            summarize_http_routes(rust_code).is_none(),
+            "generic .get() calls should not be detected as HTTP routes"
+        );
+
+        let actual_routes = r#"
+            app.get("/api/users", list_users);
+            router.post("/api/login", handle_login);
+            route("/health", get(health_check));
+        "#;
+        let result = summarize_http_routes(actual_routes);
+        assert!(
+            result.is_some(),
+            "actual HTTP routes with path strings should be detected"
+        );
+        let text = result.unwrap();
+        assert!(text.contains("/api/users"), "should capture the route path");
+    }
+
+    #[test]
+    fn auth_ignores_session_id_without_auth_context() {
+        let temp = tempdir().expect("tempdir");
+        let worker_code = r#"
+            let session_id = self.start_worker().await?;
+            session_id,
+            let session_id = self.resume_session(previous_session_id).await?;
+        "#;
+        let cargo = "[package]\nname = \"test-crate\"\nversion = \"0.1.0\"\n";
+        fs::write(temp.path().join("Cargo.toml"), cargo).expect("write cargo");
+        fs::create_dir_all(temp.path().join("src")).expect("src dir");
+        fs::write(temp.path().join("src/lib.rs"), worker_code).expect("write lib");
+
+        let scan = scan_workspace(temp.path()).expect("scan");
+        assert!(
+            scan.auth.is_empty(),
+            "session_id without auth-adjacent keywords should not trigger auth detection, got: {:?}",
+            scan.auth.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn consolidate_facts_deduplicates_summary_segments() {
+        let facts = vec![
+            DiscoveryFact {
+                id: "t.001".to_string(),
+                title: "Rust".to_string(),
+                summary: "Detected crates/frameworks: anyhow, serde.".to_string(),
+                evidence: vec![PathBuf::from("Cargo.toml")],
+                tier: NegentropyTier::Structure,
+            },
+            DiscoveryFact {
+                id: "t.002".to_string(),
+                title: "Rust".to_string(),
+                summary: "Detected crates/frameworks: anyhow, tokio.".to_string(),
+                evidence: vec![PathBuf::from("crates/foo/Cargo.toml")],
+                tier: NegentropyTier::Structure,
+            },
+        ];
+        let consolidated = consolidate_facts(&facts);
+        assert_eq!(consolidated.len(), 1);
+        let summary = &consolidated[0].summary;
+        let anyhow_count = summary.matches("anyhow").count();
+        assert!(
+            anyhow_count <= 1,
+            "anyhow should appear at most once in consolidated summary, but appeared {} times in: {}",
+            anyhow_count,
+            summary
         );
     }
 }
