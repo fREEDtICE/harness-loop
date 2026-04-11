@@ -1,6 +1,10 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use anyhow::{Context, Result, bail};
@@ -9,20 +13,33 @@ use loopsmith_core::{
     artifacts::FileArtifactStore,
     config::{AppConfig, ResolvedConfig},
     discovery::{
-        WorkspaceDiscoveryPayload, WorkspaceDiscoveryPhase, WorkspaceDiscoveryRequest,
-        WorkspaceDiscoveryStatus, WorkspaceDiscoveryStore, WorkspaceProfile,
-        WorkspaceProfileSelection, profile_fingerprint, scan_workspace,
+        WorkspaceDiscoveryInference, WorkspaceDiscoveryPayload, WorkspaceDiscoveryPhase,
+        WorkspaceDiscoveryRequest, WorkspaceDiscoveryStatus, WorkspaceDiscoveryStore,
+        WorkspaceProfile, WorkspaceProfileSelection, profile_fingerprint, scan_workspace,
     },
-    domain::{PromptOverrides, PromptSnapshot, QaStatus, RunLifecycleStatus, RunRequest, RunState},
+    domain::{
+        PlannerConversationRequest, PlannerConversationResponse, PlannerConversationTurn,
+        PromptOverrides, PromptSnapshot, QaStatus, RunLifecycleStatus, RunRequest, RunState,
+    },
     paths::normalize_path,
-    worker::{DiscoveryContext, WorkerAdapter},
+    worker::{
+        DiscoveryContext, PlannerConversationArtifactSet, PlannerConversationContext, WorkerAdapter,
+    },
 };
 use loopsmith_worker_factory::{build_configured_worker, build_discovery_worker};
 use serde::{Deserialize, Serialize};
+use tempfile::tempdir;
+use tokio::time::{Duration, interval};
 
 const DEFAULT_DISCOVERY_PROMPT: &str = include_str!("../../../prompts/discovery.md");
 const DEFAULT_WORKSPACE_PROFILE_SCHEMA: &str =
     include_str!("../../../schemas/workspace-profile.json");
+const DEFAULT_WORKSPACE_INFERENCE_SCHEMA: &str =
+    include_str!("../../../schemas/workspace-inference.json");
+const DEFAULT_PLANNER_CONVERSATION_PROMPT: &str = include_str!("../../../prompts/planner-chat.md");
+const DEFAULT_PLANNER_CONVERSATION_SCHEMA: &str =
+    include_str!("../../../schemas/planner-chat.json");
+const DISCOVERY_PHASE_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LaunchDraft {
@@ -31,6 +48,17 @@ pub struct LaunchDraft {
     pub request_draft: String,
     pub prompt_overrides: PromptOverrides,
     pub feature_limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlannerConversationDraft {
+    pub workspace_path: PathBuf,
+    pub config_path: PathBuf,
+    pub request_draft: String,
+    pub prompt_overrides: PromptOverrides,
+    pub feature_limit: Option<usize>,
+    #[serde(default)]
+    pub conversation: Vec<PlannerConversationTurn>,
 }
 
 #[derive(Debug, Clone)]
@@ -51,6 +79,8 @@ pub struct WorkspaceRunSummary {
     pub final_status: Option<QaStatus>,
     pub current_feature_index: usize,
     pub total_features: usize,
+    #[serde(default)]
+    pub awaiting_feature_confirmation: bool,
     pub active_stage: Option<loopsmith_core::domain::ActiveRunStage>,
 }
 
@@ -88,6 +118,7 @@ impl HarnessUiService {
         let config_path = normalize_path(draft.config_path);
         let resolved_config = AppConfig::load(&config_path)?;
         let prompt_snapshot = resolve_effective_prompts(&resolved_config, &draft.prompt_overrides)?;
+        let confirm_before_build = resolved_config.runtime.confirm_before_build;
 
         Ok(PreparedLaunch {
             config_path: config_path.clone(),
@@ -97,6 +128,7 @@ impl HarnessUiService {
                 user_request: draft.request_draft,
                 source_workspace: workspace_path,
                 feature_limit: draft.feature_limit,
+                confirm_before_build,
                 selected_config: Some(config_path),
                 prompt_overrides: draft.prompt_overrides,
                 workspace_profile: None,
@@ -120,6 +152,57 @@ impl HarnessUiService {
         let discovery_worker = build_discovery_worker(&resolved_config)?;
         refresh_workspace_profile(&resolved_config, discovery_worker.as_ref(), &workspace_path)
             .await
+    }
+
+    pub async fn consult_planner(
+        &self,
+        draft: PlannerConversationDraft,
+    ) -> Result<PlannerConversationResponse> {
+        let workspace_path = self.validate_workspace_path(draft.workspace_path)?;
+        let config_path = normalize_path(draft.config_path);
+        let resolved_config = AppConfig::load(&config_path)?;
+        let prompt_snapshot = resolve_effective_prompts(&resolved_config, &draft.prompt_overrides)?;
+        let discovery_worker = build_discovery_worker(&resolved_config)?;
+        let workspace_profile =
+            refresh_workspace_profile(&resolved_config, discovery_worker.as_ref(), &workspace_path)
+                .await?;
+        let planner_worker = build_discovery_worker(&resolved_config)?;
+        let request = PlannerConversationRequest {
+            request_draft: draft.request_draft,
+            feature_limit: draft.feature_limit,
+            conversation: draft.conversation,
+        };
+        let temp = tempdir().context("failed to create planner consultation temp directory")?;
+        let prompt_file = temp.path().join("planner-consult.md");
+        let schema_file = temp.path().join("planner-consult-schema.json");
+        let output_file = temp.path().join("planner-consult-output.json");
+        let stdout_log = temp.path().join("planner-consult-stdout.log");
+        let stderr_log = temp.path().join("planner-consult-stderr.log");
+        let wrapped_prompt = planner_conversation_prompt(&prompt_snapshot.planner);
+        fs::write(&prompt_file, wrapped_prompt)
+            .with_context(|| format!("failed to write {}", prompt_file.display()))?;
+        fs::write(&schema_file, DEFAULT_PLANNER_CONVERSATION_SCHEMA)
+            .with_context(|| format!("failed to write {}", schema_file.display()))?;
+        let artifacts = PlannerConversationArtifactSet {
+            prompt_file: prompt_file.clone(),
+            output_file: output_file.clone(),
+            stdout_log: stdout_log.clone(),
+            stderr_log: stderr_log.clone(),
+        };
+        let context = PlannerConversationContext {
+            workspace: workspace_path,
+            planner_conversation_prompt: prompt_file,
+            planner_conversation_schema: schema_file,
+            workspace_profile_artifact: Some(workspace_profile.canonical_profile_path.clone()),
+            workspace_profile_context: Some(workspace_profile.profile.prompt_context()),
+        };
+        planner_worker
+            .consult_planner(&context, &artifacts, &request)
+            .await?;
+        let bytes = fs::read(&output_file)
+            .with_context(|| format!("failed to read {}", output_file.display()))?;
+        serde_json::from_slice(&bytes)
+            .with_context(|| format!("failed to parse {}", output_file.display()))
     }
 
     pub async fn start_prepared_run(&self, mut prepared: PreparedLaunch) -> Result<RunState> {
@@ -252,6 +335,7 @@ impl HarnessUiService {
                 final_status: state.final_status,
                 current_feature_index: state.current_feature_index,
                 total_features: state.features.len(),
+                awaiting_feature_confirmation: state.awaiting_feature_confirmation,
                 active_stage: state.active_stage,
             });
         }
@@ -280,6 +364,12 @@ fn truncate_str(text: &str, max_chars: usize) -> String {
     }
 }
 
+fn planner_conversation_prompt(planner_prompt: &str) -> String {
+    format!(
+        "{DEFAULT_PLANNER_CONVERSATION_PROMPT}\n\nPlanner System Prompt Reference:\n{planner_prompt}\n"
+    )
+}
+
 async fn refresh_workspace_profile(
     config: &ResolvedConfig,
     worker: &dyn WorkerAdapter,
@@ -291,7 +381,9 @@ async fn refresh_workspace_profile(
     store.ensure_dirs()?;
 
     let scan_path = store.scan_path();
+    let evidence_path = store.evidence_path();
     let profile_path = store.profile_path();
+    let inference_path = store.inference_path();
     let status_path = store.status_path();
     let existing_status = store.load_status()?;
     let previous_workspace_fingerprint = existing_status
@@ -308,7 +400,9 @@ async fn refresh_workspace_profile(
     store.save_status(&workspace_discovery_status(
         &workspace_path,
         &scan_path,
+        &evidence_path,
         &profile_path,
+        &inference_path,
         previous_workspace_fingerprint,
         previous_profile_fingerprint,
         Utc::now(),
@@ -319,11 +413,13 @@ async fn refresh_workspace_profile(
     ))?;
 
     let scan = scan_workspace(&workspace_path)?;
-    store.save_scan(&scan)?;
+    store.save_evidence(&scan)?;
 
     let existing_status = store.load_status()?;
     let existing_profile = store.load_profile()?;
+    let existing_inference = store.load_inference()?;
     let needs_refresh = existing_profile.is_none()
+        || existing_inference.is_none()
         || existing_status
             .as_ref()
             .map(|status| status.workspace_fingerprint.as_str())
@@ -339,7 +435,9 @@ async fn refresh_workspace_profile(
         store.save_status(&workspace_discovery_status(
             &workspace_path,
             &scan_path,
+            &evidence_path,
             &profile_path,
+            &inference_path,
             scan.workspace_fingerprint.clone(),
             Some(profile_fingerprint.clone()),
             scan.scanned_at,
@@ -351,7 +449,9 @@ async fn refresh_workspace_profile(
         let status = workspace_discovery_status(
             &workspace_path,
             &scan_path,
+            &evidence_path,
             &profile_path,
+            &inference_path,
             scan.workspace_fingerprint.clone(),
             Some(profile_fingerprint.clone()),
             scan.scanned_at,
@@ -366,6 +466,8 @@ async fn refresh_workspace_profile(
             profile,
             canonical_profile_path: profile_path,
             scan_path,
+            evidence_path,
+            inference_path,
             status_path,
             workspace_fingerprint: status.workspace_fingerprint,
             profile_fingerprint,
@@ -380,73 +482,131 @@ async fn refresh_workspace_profile(
     let context = DiscoveryContext {
         workspace: workspace_path.clone(),
         discovery_prompt: config.prompts.discovery.clone(),
-        workspace_profile_schema: config.schemas.workspace_profile.clone(),
+        workspace_profile_schema: config.schemas.workspace_inference.clone(),
     };
     let request = WorkspaceDiscoveryRequest {
         scan: scan.clone(),
         previous_profile: existing_profile.clone(),
+        previous_inference: existing_inference.clone(),
     };
+    let polishing_profile_fingerprint = existing_status
+        .as_ref()
+        .and_then(|status| status.profile_fingerprint.clone());
+    let polishing_last_refreshed_at = existing_status
+        .as_ref()
+        .and_then(|status| status.last_refreshed_at);
+    store.reset_worker_artifacts()?;
     store.save_status(&workspace_discovery_status(
         &workspace_path,
         &scan_path,
+        &evidence_path,
         &profile_path,
+        &inference_path,
         scan.workspace_fingerprint.clone(),
-        existing_status
-            .as_ref()
-            .and_then(|status| status.profile_fingerprint.clone()),
+        polishing_profile_fingerprint.clone(),
         scan.scanned_at,
-        existing_status
-            .as_ref()
-            .and_then(|status| status.last_refreshed_at),
+        polishing_last_refreshed_at,
         None,
         false,
         WorkspaceDiscoveryPhase::Polishing,
     ))?;
-
-    match worker.discover(&context, &artifacts, &request).await {
-        Ok(result) => {
-            let bytes = fs::read(&artifacts.output_file)
-                .with_context(|| format!("failed to read {}", artifacts.output_file.display()))?;
-            let profile: WorkspaceProfile = serde_json::from_slice(&bytes)
-                .with_context(|| format!("failed to parse {}", artifacts.output_file.display()))?;
-            let profile_fingerprint = profile_fingerprint(&profile)?;
-            store.save_profile(&profile)?;
-            fs::write(
-                &artifacts.result_file,
-                serde_json::to_vec_pretty(&result)
-                    .context("failed to serialize discovery result")?,
-            )
-            .with_context(|| format!("failed to write {}", artifacts.result_file.display()))?;
-
-            let status = workspace_discovery_status(
-                &workspace_path,
-                &scan_path,
-                &profile_path,
-                scan.workspace_fingerprint.clone(),
-                Some(profile_fingerprint.clone()),
-                scan.scanned_at,
-                Some(profile.generated_at),
-                None,
-                false,
-                WorkspaceDiscoveryPhase::Ready,
-            );
-            store.save_status(&status)?;
-
-            Ok(WorkspaceProfileSelection {
-                profile,
-                canonical_profile_path: profile_path,
-                scan_path,
-                status_path,
-                workspace_fingerprint: status.workspace_fingerprint,
-                profile_fingerprint,
-                last_scanned_at: status.last_scanned_at,
-                last_refreshed_at: status
-                    .last_refreshed_at
-                    .expect("freshly written discovery status should have refresh time"),
-                refresh_error: None,
-                used_fallback_profile: false,
-            })
+    let heartbeat_stop = Arc::new(AtomicBool::new(false));
+    let heartbeat_task = tokio::spawn({
+        let store = store.clone();
+        let workspace_path = workspace_path.clone();
+        let scan_path = scan_path.clone();
+        let evidence_path = evidence_path.clone();
+        let profile_path = profile_path.clone();
+        let inference_path = inference_path.clone();
+        let workspace_fingerprint = scan.workspace_fingerprint.clone();
+        let profile_fingerprint = polishing_profile_fingerprint.clone();
+        let heartbeat_stop = heartbeat_stop.clone();
+        async move {
+            let mut ticker = interval(DISCOVERY_PHASE_HEARTBEAT_INTERVAL);
+            ticker.tick().await;
+            loop {
+                if heartbeat_stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                ticker.tick().await;
+                if heartbeat_stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                let status = workspace_discovery_status(
+                    &workspace_path,
+                    &scan_path,
+                    &evidence_path,
+                    &profile_path,
+                    &inference_path,
+                    workspace_fingerprint.clone(),
+                    profile_fingerprint.clone(),
+                    scan.scanned_at,
+                    polishing_last_refreshed_at,
+                    None,
+                    false,
+                    WorkspaceDiscoveryPhase::Polishing,
+                );
+                let _ = store.save_status(&status);
+            }
         }
+    });
+
+    let refresh_result: Result<WorkspaceProfileSelection> = async {
+        let result = worker.discover(&context, &artifacts, &request).await?;
+        let bytes = fs::read(&artifacts.output_file)
+            .with_context(|| format!("failed to read {}", artifacts.output_file.display()))?;
+        let (inference, profile) = parse_discovery_worker_output(&bytes, &scan)
+            .with_context(|| format!("failed to parse {}", artifacts.output_file.display()))?;
+        inference.validate(&scan)?;
+        let profile_fingerprint = profile_fingerprint(&profile)?;
+        store.save_inference(&inference)?;
+        store.save_profile(&profile)?;
+        fs::write(
+            &artifacts.result_file,
+            serde_json::to_vec_pretty(&result).context("failed to serialize discovery result")?,
+        )
+        .with_context(|| format!("failed to write {}", artifacts.result_file.display()))?;
+
+        let status = workspace_discovery_status(
+            &workspace_path,
+            &scan_path,
+            &evidence_path,
+            &profile_path,
+            &inference_path,
+            scan.workspace_fingerprint.clone(),
+            Some(profile_fingerprint.clone()),
+            scan.scanned_at,
+            Some(profile.generated_at),
+            None,
+            false,
+            WorkspaceDiscoveryPhase::Ready,
+        );
+        store.save_status(&status)?;
+
+        Ok(WorkspaceProfileSelection {
+            profile,
+            canonical_profile_path: profile_path.clone(),
+            scan_path: scan_path.clone(),
+            evidence_path: evidence_path.clone(),
+            inference_path: inference_path.clone(),
+            status_path: status_path.clone(),
+            workspace_fingerprint: status.workspace_fingerprint,
+            profile_fingerprint,
+            last_scanned_at: status.last_scanned_at,
+            last_refreshed_at: status
+                .last_refreshed_at
+                .expect("freshly written discovery status should have refresh time"),
+            refresh_error: None,
+            used_fallback_profile: false,
+        })
+    }
+    .await;
+
+    heartbeat_stop.store(true, Ordering::Relaxed);
+    let _ = heartbeat_task.await;
+
+    match refresh_result {
+        Ok(selection) => Ok(selection),
         Err(error) => {
             let error_message = error.to_string();
             if let Some(profile) = existing_profile {
@@ -458,7 +618,9 @@ async fn refresh_workspace_profile(
                 let status = workspace_discovery_status(
                     &workspace_path,
                     &scan_path,
+                    &evidence_path,
                     &profile_path,
+                    &inference_path,
                     scan.workspace_fingerprint.clone(),
                     Some(profile_fingerprint.clone()),
                     scan.scanned_at,
@@ -473,6 +635,8 @@ async fn refresh_workspace_profile(
                     profile,
                     canonical_profile_path: profile_path,
                     scan_path,
+                    evidence_path,
+                    inference_path,
                     status_path,
                     workspace_fingerprint: status.workspace_fingerprint,
                     profile_fingerprint,
@@ -486,13 +650,13 @@ async fn refresh_workspace_profile(
             let status = workspace_discovery_status(
                 &workspace_path,
                 &scan_path,
+                &evidence_path,
                 &profile_path,
+                &inference_path,
                 scan.workspace_fingerprint,
                 None,
                 scan.scanned_at,
-                existing_status
-                    .as_ref()
-                    .and_then(|status| status.last_refreshed_at),
+                polishing_last_refreshed_at,
                 Some(error_message),
                 false,
                 WorkspaceDiscoveryPhase::Failed,
@@ -503,10 +667,27 @@ async fn refresh_workspace_profile(
     }
 }
 
+fn parse_discovery_worker_output(
+    bytes: &[u8],
+    evidence: &loopsmith_core::discovery::WorkspaceDiscoveryEvidence,
+) -> Result<(WorkspaceDiscoveryInference, WorkspaceProfile)> {
+    if let Ok(inference) = serde_json::from_slice::<WorkspaceDiscoveryInference>(bytes) {
+        let profile = inference.assemble_profile(evidence);
+        return Ok((inference, profile));
+    }
+
+    let profile: WorkspaceProfile = serde_json::from_slice(bytes)
+        .context("worker output matched neither inference nor legacy profile schema")?;
+    let inference = WorkspaceDiscoveryInference::from_legacy_profile(&profile, evidence);
+    Ok((inference, profile))
+}
+
 fn workspace_discovery_status(
     workspace_path: &Path,
     scan_path: &Path,
+    evidence_path: &Path,
     profile_path: &Path,
+    inference_path: &Path,
     workspace_fingerprint: String,
     profile_fingerprint: Option<String>,
     last_scanned_at: DateTime<Utc>,
@@ -518,7 +699,9 @@ fn workspace_discovery_status(
     WorkspaceDiscoveryStatus {
         workspace_path: workspace_path.to_path_buf(),
         scan_path: scan_path.to_path_buf(),
+        evidence_path: evidence_path.to_path_buf(),
         profile_path: profile_path.to_path_buf(),
+        inference_path: inference_path.to_path_buf(),
         workspace_fingerprint,
         profile_fingerprint,
         last_scanned_at,
@@ -526,6 +709,7 @@ fn workspace_discovery_status(
         last_refresh_error,
         used_fallback_profile,
         current_phase,
+        phase_heartbeat_at: Some(Utc::now()),
     }
 }
 
@@ -534,6 +718,10 @@ fn ensure_discovery_assets(config: &ResolvedConfig) -> Result<()> {
     ensure_text_file(
         &config.schemas.workspace_profile,
         DEFAULT_WORKSPACE_PROFILE_SCHEMA,
+    )?;
+    ensure_text_file(
+        &config.schemas.workspace_inference,
+        DEFAULT_WORKSPACE_INFERENCE_SCHEMA,
     )?;
     Ok(())
 }
@@ -626,14 +814,21 @@ mod tests {
             WorkspaceDiscoveryStore, WorkspaceProfile,
         },
         domain::{
-            BuilderHandoff, EvaluationRequest, FeatureContract, PromptOverrides, QaReport,
-            QaStatus, RunLifecycleStatus, RunState, WorkerResult, WorkerStatus,
+            BuilderHandoff, EvaluationRequest, FeatureContract, PlannerConversationRequest,
+            PromptOverrides, QaReport, QaStatus, RunLifecycleStatus, RunState, WorkerResult,
+            WorkerStatus,
         },
-        worker::{DiscoveryContext, DiscoveryWorkerResult, WorkerAdapter, WorkerContext},
+        worker::{
+            DiscoveryContext, DiscoveryWorkerResult, PlannerConversationArtifactSet,
+            PlannerConversationContext, PlannerConversationWorkerResult, WorkerAdapter,
+            WorkerContext,
+        },
         workspace::WorkspaceIsolation,
     };
 
-    use super::{HarnessUiService, LaunchDraft, refresh_workspace_profile};
+    use super::{
+        HarnessUiService, LaunchDraft, PlannerConversationDraft, refresh_workspace_profile,
+    };
 
     #[derive(Default)]
     struct FakeDiscoveryState {
@@ -700,6 +895,15 @@ mod tests {
             _request: &loopsmith_core::domain::PlanningRequest,
         ) -> Result<WorkerResult> {
             Err(anyhow!("unexpected plan call in discovery test"))
+        }
+
+        async fn consult_planner(
+            &self,
+            _context: &PlannerConversationContext,
+            _artifacts: &PlannerConversationArtifactSet,
+            _request: &PlannerConversationRequest,
+        ) -> Result<PlannerConversationWorkerResult> {
+            Err(anyhow!("unexpected planner consult call in discovery test"))
         }
 
         async fn build(
@@ -780,6 +984,97 @@ mod tests {
             _request: &loopsmith_core::domain::PlanningRequest,
         ) -> Result<WorkerResult> {
             Err(anyhow!("unexpected plan call in discovery test"))
+        }
+
+        async fn consult_planner(
+            &self,
+            _context: &PlannerConversationContext,
+            _artifacts: &PlannerConversationArtifactSet,
+            _request: &PlannerConversationRequest,
+        ) -> Result<PlannerConversationWorkerResult> {
+            Err(anyhow!("unexpected planner consult call in discovery test"))
+        }
+
+        async fn build(
+            &self,
+            _context: &WorkerContext,
+            _feature: &FeatureLayout,
+            _artifacts: &StageArtifactSet,
+            _contract: &FeatureContract,
+        ) -> Result<WorkerResult> {
+            Err(anyhow!("unexpected build call in discovery test"))
+        }
+
+        async fn evaluate(
+            &self,
+            _context: &WorkerContext,
+            _feature: &FeatureLayout,
+            _artifacts: &StageArtifactSet,
+            _request: &EvaluationRequest,
+        ) -> Result<WorkerResult> {
+            Err(anyhow!("unexpected evaluate call in discovery test"))
+        }
+
+        async fn repair(
+            &self,
+            _context: &WorkerContext,
+            _feature: &FeatureLayout,
+            _artifacts: &StageArtifactSet,
+            _contract: &FeatureContract,
+            _builder_handoff: &BuilderHandoff,
+            _qa_report: &QaReport,
+            _previous_session_id: Option<&str>,
+        ) -> Result<WorkerResult> {
+            Err(anyhow!("unexpected repair call in discovery test"))
+        }
+    }
+
+    struct MissingDiscoveryOutputWorker {
+        state: Arc<Mutex<FakeDiscoveryState>>,
+    }
+
+    #[async_trait]
+    impl WorkerAdapter for MissingDiscoveryOutputWorker {
+        async fn discover(
+            &self,
+            _context: &DiscoveryContext,
+            artifacts: &DiscoveryArtifactSet,
+            _request: &WorkspaceDiscoveryRequest,
+        ) -> Result<DiscoveryWorkerResult> {
+            let mut state = self.state.lock().expect("lock");
+            state.discover_calls += 1;
+            fs::write(&artifacts.prompt_file, "fake discovery prompt\n").expect("write prompt");
+            fs::write(&artifacts.stdout_log, "fake discovery stdout\n").expect("write stdout");
+            fs::write(&artifacts.stderr_log, "").expect("write stderr");
+
+            Ok(DiscoveryWorkerResult {
+                status: WorkerStatus::Prepared,
+                command: vec!["fake".to_string(), "discover".to_string()],
+                prompt_file: artifacts.prompt_file.clone(),
+                output_file: artifacts.output_file.clone(),
+                stdout_log: artifacts.stdout_log.clone(),
+                stderr_log: artifacts.stderr_log.clone(),
+                notes: Vec::new(),
+                session_id: Some(format!("fake-discover-missing-{:02}", state.discover_calls)),
+            })
+        }
+
+        async fn plan(
+            &self,
+            _context: &WorkerContext,
+            _artifacts: &StageArtifactSet,
+            _request: &loopsmith_core::domain::PlanningRequest,
+        ) -> Result<WorkerResult> {
+            Err(anyhow!("unexpected plan call in discovery test"))
+        }
+
+        async fn consult_planner(
+            &self,
+            _context: &PlannerConversationContext,
+            _artifacts: &PlannerConversationArtifactSet,
+            _request: &PlannerConversationRequest,
+        ) -> Result<PlannerConversationWorkerResult> {
+            Err(anyhow!("unexpected planner consult call in discovery test"))
         }
 
         async fn build(
@@ -884,6 +1179,7 @@ qa_report = "schemas/qa-report.json"
 [runtime]
 feature_limit = 1
 max_repair_attempts = 1
+confirm_before_build = true
 services = []
 stacks = []
 
@@ -913,6 +1209,7 @@ commands = []
         assert_eq!(prepared.prompt_snapshot.planner, "planner\n");
         assert_eq!(prepared.prompt_snapshot.builder, "custom builder\n");
         assert_eq!(prepared.prompt_snapshot.evaluator, "evaluator\n");
+        assert!(prepared.run_request.confirm_before_build);
     }
 
     #[test]
@@ -1008,6 +1305,7 @@ commands = []
                 lifecycle: RunLifecycleStatus::Running,
                 final_status: None,
                 current_feature_index: index,
+                awaiting_feature_confirmation: false,
                 active_stage: None,
                 plan_stage: None,
                 features: Vec::new(),
@@ -1026,6 +1324,98 @@ commands = []
             runs[0].run_root.file_name().and_then(|name| name.to_str()),
             Some("run-2")
         );
+    }
+
+    #[tokio::test]
+    async fn consult_planner_returns_structured_response() -> Result<()> {
+        let temp = tempdir()?;
+        let project_root = temp.path();
+        let config_dir = project_root.join("config");
+        let prompts_dir = project_root.join("prompts");
+        let schemas_dir = project_root.join("schemas");
+        fs::create_dir_all(&config_dir)?;
+        fs::create_dir_all(&prompts_dir)?;
+        fs::create_dir_all(&schemas_dir)?;
+        fs::write(prompts_dir.join("discovery.md"), "discovery\n")?;
+        fs::write(prompts_dir.join("planner.md"), "planner\n")?;
+        fs::write(prompts_dir.join("builder.md"), "builder\n")?;
+        fs::write(prompts_dir.join("evaluator.md"), "evaluator\n")?;
+        fs::write(schemas_dir.join("workspace-profile.json"), "{}\n")?;
+        fs::write(schemas_dir.join("planner-output.json"), "{}\n")?;
+        fs::write(schemas_dir.join("builder-handoff.json"), "{}\n")?;
+        fs::write(schemas_dir.join("qa-report.json"), "{}\n")?;
+        let config_path = config_dir.join("ui.toml");
+        fs::write(
+            &config_path,
+            r#"
+[project]
+root_dir = ".."
+
+[storage]
+runs_dir = ".loopsmith-runs"
+
+[workspace]
+isolation = "direct"
+
+[worker]
+kind = "simulated"
+
+[worker.simulation]
+evaluator_statuses = ["pass"]
+session_prefix = "sim"
+
+[prompts]
+discovery = "prompts/discovery.md"
+planner = "prompts/planner.md"
+builder = "prompts/builder.md"
+evaluator = "prompts/evaluator.md"
+
+[schemas]
+workspace_profile = "schemas/workspace-profile.json"
+planner_output = "schemas/planner-output.json"
+builder_handoff = "schemas/builder-handoff.json"
+qa_report = "schemas/qa-report.json"
+
+[runtime]
+feature_limit = 2
+max_repair_attempts = 1
+services = []
+stacks = []
+
+[evaluator]
+dimensions = ["correctness"]
+require_screenshots = false
+commands = []
+"#,
+        )?;
+        let workspace = discovery_test_workspace(project_root)?;
+
+        let service = HarnessUiService;
+        let response = service
+            .consult_planner(PlannerConversationDraft {
+                workspace_path: workspace,
+                config_path,
+                request_draft:
+                    "Add a planner chat box and pause before build until the plan is confirmed."
+                        .to_string(),
+                prompt_overrides: PromptOverrides::default(),
+                feature_limit: Some(2),
+                conversation: vec![loopsmith_core::domain::PlannerConversationTurn {
+                    role: loopsmith_core::domain::PlannerConversationRole::User,
+                    content: "What should I confirm before build starts?".to_string(),
+                }],
+            })
+            .await?;
+
+        assert!(!response.reply_markdown.trim().is_empty());
+        assert_eq!(
+            response.readiness.as_str(),
+            loopsmith_core::domain::PlannerConversationReadiness::ReadyToBuild.as_str()
+        );
+        assert!(!response.suggested_features.is_empty());
+        assert!(!response.confirmation_points.is_empty());
+
+        Ok(())
     }
 
     #[tokio::test]
@@ -1206,6 +1596,59 @@ commands = []
     }
 
     #[tokio::test]
+    async fn refresh_workspace_profile_falls_back_when_worker_returns_without_output() -> Result<()>
+    {
+        let temp = tempdir()?;
+        let config = discovery_test_config(temp.path());
+        let workspace = discovery_test_workspace(temp.path())?;
+        let initial_state = Arc::new(Mutex::new(FakeDiscoveryState::default()));
+        let initial_worker = FakeDiscoveryWorker {
+            state: initial_state,
+        };
+
+        let first = refresh_workspace_profile(&config, &initial_worker, &workspace).await?;
+        fs::write(
+            workspace.join("Makefile"),
+            "build:\n\tcargo build\n\ntest:\n\tcargo test\n",
+        )?;
+        let fallback_state = Arc::new(Mutex::new(FakeDiscoveryState::default()));
+        let fallback_worker = MissingDiscoveryOutputWorker {
+            state: fallback_state.clone(),
+        };
+
+        let fallback = refresh_workspace_profile(&config, &fallback_worker, &workspace).await?;
+        let store = WorkspaceDiscoveryStore::new(&workspace);
+        let status = store.load_status()?.expect("status");
+        let worker_artifacts = store.worker_artifacts();
+
+        assert_eq!(fallback_state.lock().expect("lock").discover_calls, 1);
+        assert!(fallback.used_fallback_profile);
+        assert_eq!(fallback.profile.summary, first.profile.summary);
+        assert!(
+            fallback
+                .refresh_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("failed to read")
+        );
+        assert_eq!(
+            status.current_phase,
+            WorkspaceDiscoveryPhase::UsingFallbackProfile
+        );
+        assert!(status.used_fallback_profile);
+        assert!(
+            status
+                .last_refresh_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("failed to read")
+        );
+        assert!(!worker_artifacts.result_file.exists());
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn refresh_workspace_profile_blocks_when_no_profile_exists_and_refresh_fails()
     -> Result<()> {
         let temp = tempdir()?;
@@ -1269,6 +1712,7 @@ commands = []
             },
             schemas: ResolvedSchemaConfig {
                 workspace_profile: schemas_dir.join("workspace-profile.json"),
+                workspace_inference: schemas_dir.join("workspace-inference.json"),
                 planner_output: schemas_dir.join("planner-output.json"),
                 builder_handoff: schemas_dir.join("builder-handoff.json"),
                 qa_report: schemas_dir.join("qa-report.json"),
@@ -1277,6 +1721,7 @@ commands = []
                 feature_limit: 1,
                 max_repair_attempts: 1,
                 continue_after_failure: false,
+                confirm_before_build: false,
                 supervision: RuntimeSupervisionConfig::default(),
                 services: Vec::new(),
                 stacks: Vec::new(),

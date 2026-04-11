@@ -38,11 +38,11 @@ function DiscoveryMetric({
 
 function DiscoveryListSection({
   title,
-  items,
+  items = [],
   code = false,
 }: {
   title: string;
-  items: string[];
+  items?: string[];
   code?: boolean;
 }) {
   if (items.length === 0) {
@@ -128,6 +128,12 @@ export default function DiscoveryStatusPanel({
         <DiscoveryField label={t("settings.scanPath")}>
           <input value={discovery.status.scan_path} readOnly />
         </DiscoveryField>
+        <DiscoveryField label={t("settings.evidencePath")}>
+          <input value={discovery.status.evidence_path} readOnly />
+        </DiscoveryField>
+        <DiscoveryField label={t("settings.inferencePath")}>
+          <input value={discovery.status.inference_path} readOnly />
+        </DiscoveryField>
       </DiscoveryRow>
       <DiscoveryRow>
         <DiscoveryField label={t("settings.workspaceFingerprint")}>
@@ -147,6 +153,17 @@ export default function DiscoveryStatusPanel({
           <textarea
             className="settings-textarea"
             value={discovery.profile_summary ?? "—"}
+            readOnly
+            rows={3}
+            spellCheck={false}
+          />
+        </DiscoveryField>
+      </DiscoveryRow>
+      <DiscoveryRow>
+        <DiscoveryField label={t("settings.inferenceSummary")}>
+          <textarea
+            className="settings-textarea"
+            value={discovery.inference_summary ?? "—"}
             readOnly
             rows={3}
             spellCheck={false}
@@ -179,6 +196,11 @@ export default function DiscoveryStatusPanel({
           value={overview.test_command_count}
         />
         <DiscoveryMetric label={t("settings.devCommands")} value={overview.dev_command_count} />
+        <DiscoveryMetric label={t("settings.inferences")} value={overview.inference_count} />
+        <DiscoveryMetric
+          label={t("settings.avgInferenceConfidence")}
+          value={Math.round((overview.average_inference_confidence ?? 0) * 10) / 10}
+        />
       </div>
 
       <div className="discovery-detail-grid" data-testid="project-settings-discovery-details">
@@ -237,6 +259,14 @@ export default function DiscoveryStatusPanel({
           title={t("settings.devCommands")}
           items={overview.dev_commands}
           code
+        />
+        <DiscoveryListSection
+          title={t("settings.strongestInferences")}
+          items={overview.strongest_inferences}
+        />
+        <DiscoveryListSection
+          title={t("settings.weakestInferences")}
+          items={overview.weakest_inferences}
         />
         <DiscoveryListSection title={t("settings.risks")} items={overview.risks} />
       </div>

@@ -13,3 +13,5 @@ apps/harness-ui/src-tauri/target
 dist/
 *.log
 apps/harness-ui/scripts/.compiled/
+.tmp-loopsmith-home/
+.trae/

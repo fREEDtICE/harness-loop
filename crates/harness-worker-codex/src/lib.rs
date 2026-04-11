@@ -7,12 +7,14 @@ use loopsmith_core::{
     config::CodexWorkerConfig,
     discovery::{DiscoveryArtifactSet, WorkspaceDiscoveryRequest},
     domain::{
-        BuilderHandoff, EvaluationRequest, PlanningRequest, QaReport, WorkerResult, WorkerStatus,
+        BuilderHandoff, EvaluationRequest, PlannerConversationRequest, PlanningRequest, QaReport,
+        WorkerResult, WorkerStatus,
     },
     shell_env::wrap_command_for_user_shell,
     worker::{
-        DiscoveryContext, DiscoveryWorkerResult, WorkerAdapter, WorkerContext,
-        render_discovery_prompt, render_worker_prompt,
+        DiscoveryContext, DiscoveryWorkerResult, PlannerConversationArtifactSet,
+        PlannerConversationContext, PlannerConversationWorkerResult, WorkerAdapter, WorkerContext,
+        render_discovery_prompt, render_planner_conversation_prompt, render_worker_prompt,
     },
 };
 use serde::Serialize;
@@ -568,6 +570,46 @@ impl WorkerAdapter for CodexCliWorker {
             request,
         )
         .await
+    }
+
+    async fn consult_planner(
+        &self,
+        context: &PlannerConversationContext,
+        artifacts: &PlannerConversationArtifactSet,
+        request: &PlannerConversationRequest,
+    ) -> Result<PlannerConversationWorkerResult> {
+        let prompt = render_planner_conversation_prompt(context, request)?;
+        fs::write(&artifacts.prompt_file, &prompt)
+            .with_context(|| format!("failed to write {}", artifacts.prompt_file.display()))?;
+
+        let command = self.exec_command_for_workspace(
+            &context.workspace,
+            &context.planner_conversation_schema,
+            &artifacts.output_file,
+        );
+        let session_id = self
+            .execute_command(
+                &artifacts.prompt_file,
+                &artifacts.output_file,
+                &artifacts.stdout_log,
+                &artifacts.stderr_log,
+                command.clone(),
+                &prompt,
+                "planner_consult",
+                1,
+            )
+            .await?;
+
+        Ok(PlannerConversationWorkerResult {
+            status: WorkerStatus::Executed,
+            command,
+            prompt_file: artifacts.prompt_file.clone(),
+            output_file: artifacts.output_file.clone(),
+            stdout_log: artifacts.stdout_log.clone(),
+            stderr_log: artifacts.stderr_log.clone(),
+            notes: vec!["Execution completed.".to_string()],
+            session_id,
+        })
     }
 
     async fn build(

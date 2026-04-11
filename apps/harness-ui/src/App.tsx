@@ -33,6 +33,9 @@ import {
 import type {
   EditorState,
   LaunchDraft,
+  PlannerConversationDraft,
+  PlannerConversationResponse,
+  PlannerConversationTurn,
   PromptOverrides,
   RunState,
   WorkspacePayload,
@@ -82,8 +85,15 @@ export default function App() {
 
   const promptDefaults = workspace?.prompts?.defaults ?? null;
   const visibleWorkspace = mergePendingLaunch(workspace, pendingLaunch);
-  const activeRunRoot = visibleWorkspace?.runs.find((run) => run.lifecycle === "running")?.run_root
-    ?? (visibleWorkspace?.current_run?.lifecycle === "running" ? visibleWorkspace.current_run.run_root : null);
+  const activeRunRoot = visibleWorkspace?.runs.find(
+    (run) => run.lifecycle === "running" && !run.awaiting_feature_confirmation,
+  )?.run_root
+    ?? (
+      visibleWorkspace?.current_run?.lifecycle === "running"
+      && !visibleWorkspace.current_run.awaiting_feature_confirmation
+        ? visibleWorkspace.current_run.run_root
+        : null
+    );
 
   const detailRun = selectedRunRoot
     ? visibleWorkspace?.current_run?.run_root === selectedRunRoot
@@ -97,7 +107,7 @@ export default function App() {
     ? { ...visibleWorkspace, current_run: detailRun }
     : visibleWorkspace;
 
-  const isLive = detailRun?.lifecycle === "running";
+  const isLive = detailRun?.lifecycle === "running" && !detailRun.awaiting_feature_confirmation;
 
   useEffect(() => {
     if (!selectedWorkspacePath) {
@@ -261,7 +271,33 @@ export default function App() {
     await inspectRun(runRoot);
   }
 
-  async function launchRun(requestDraft: string, promptOverrides: PromptOverrides, featureLimit: number | null) {
+  async function consultPlanner(
+    requestDraft: string,
+    promptOverrides: PromptOverrides,
+    featureLimit: number | null,
+    conversation: PlannerConversationTurn[],
+  ): Promise<PlannerConversationResponse> {
+    if (!workspace || !selectedWorkspacePath) {
+      throw new Error("A workspace must be selected before consulting the planner.");
+    }
+
+    const draft: PlannerConversationDraft = {
+      workspace_path: workspace.record.workspace_path,
+      config_path: workspace.config_path,
+      request_draft: requestDraft,
+      prompt_overrides: promptOverrides,
+      feature_limit: featureLimit,
+      conversation,
+    };
+
+    return invoke<PlannerConversationResponse>("consult_planner", { draft });
+  }
+
+  async function launchRun(
+    requestDraft: string,
+    promptOverrides: PromptOverrides,
+    featureLimit: number | null,
+  ) {
     if (!workspace || !selectedWorkspacePath) return;
 
     setShowNewRun(false);
@@ -285,7 +321,11 @@ export default function App() {
         current ? { ...current, current_run: run } : current,
       );
       updateSelectedRunState(selectedWorkspacePath, run.run_root, run);
-      setStatusMessage(t('app.runCompleted'));
+      setStatusMessage(
+        run.awaiting_feature_confirmation
+          ? t('app.awaitingFeatureConfirmation')
+          : t('app.runCompleted'),
+      );
       await refreshWorkspace(selectedWorkspacePath, false);
     } catch (error) {
       setPendingLaunch(null);
@@ -490,6 +530,7 @@ export default function App() {
           promptDefaults={promptDefaults}
           promptEffective={workspace.prompts?.effective ?? null}
           isRunning={isRunning}
+          onPlannerChat={consultPlanner}
           onClose={() => setShowNewRun(false)}
           onStart={launchRun}
         />

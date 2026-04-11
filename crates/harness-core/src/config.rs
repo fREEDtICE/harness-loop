@@ -155,6 +155,8 @@ pub struct PromptConfig {
 pub struct SchemaConfig {
     #[serde(default = "default_workspace_profile_schema_path")]
     pub workspace_profile: PathBuf,
+    #[serde(default = "default_workspace_inference_schema_path")]
+    pub workspace_inference: PathBuf,
     pub planner_output: PathBuf,
     pub builder_handoff: PathBuf,
     pub qa_report: PathBuf,
@@ -166,6 +168,8 @@ pub struct RuntimeConfig {
     pub max_repair_attempts: usize,
     #[serde(default)]
     pub continue_after_failure: bool,
+    #[serde(default)]
+    pub confirm_before_build: bool,
     #[serde(default)]
     pub supervision: RuntimeSupervisionConfig,
     #[serde(default)]
@@ -259,6 +263,7 @@ pub struct ResolvedPromptConfig {
 #[derive(Debug, Clone)]
 pub struct ResolvedSchemaConfig {
     pub workspace_profile: PathBuf,
+    pub workspace_inference: PathBuf,
     pub planner_output: PathBuf,
     pub builder_handoff: PathBuf,
     pub qa_report: PathBuf,
@@ -292,6 +297,10 @@ impl AppConfig {
             },
             schemas: ResolvedSchemaConfig {
                 workspace_profile: resolve_path(&project_root, &config.schemas.workspace_profile),
+                workspace_inference: resolve_path(
+                    &project_root,
+                    &config.schemas.workspace_inference,
+                ),
                 planner_output: resolve_path(&project_root, &config.schemas.planner_output),
                 builder_handoff: resolve_path(&project_root, &config.schemas.builder_handoff),
                 qa_report: resolve_path(&project_root, &config.schemas.qa_report),
@@ -348,6 +357,10 @@ fn default_discovery_prompt_path() -> PathBuf {
 
 fn default_workspace_profile_schema_path() -> PathBuf {
     PathBuf::from("schemas/workspace-profile.json")
+}
+
+fn default_workspace_inference_schema_path() -> PathBuf {
+    PathBuf::from("schemas/workspace-inference.json")
 }
 
 fn default_simulation_session_prefix() -> String {

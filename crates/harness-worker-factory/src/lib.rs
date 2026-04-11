@@ -5,9 +5,13 @@ use loopsmith_core::{
     config::{PlannerWorkerConfig, ResolvedConfig, WorkerSelection},
     discovery::{DiscoveryArtifactSet, WorkspaceDiscoveryRequest},
     domain::{
-        BuilderHandoff, EvaluationRequest, FeatureContract, PlanningRequest, QaReport, WorkerResult,
+        BuilderHandoff, EvaluationRequest, FeatureContract, PlannerConversationRequest,
+        PlanningRequest, QaReport, WorkerResult,
     },
-    worker::{DiscoveryContext, DiscoveryWorkerResult, WorkerAdapter, WorkerContext},
+    worker::{
+        DiscoveryContext, DiscoveryWorkerResult, PlannerConversationArtifactSet,
+        PlannerConversationContext, PlannerConversationWorkerResult, WorkerAdapter, WorkerContext,
+    },
 };
 use loopsmith_worker_claude::ClaudeCliWorker;
 use loopsmith_worker_codex::CodexCliWorker;
@@ -103,6 +107,17 @@ impl WorkerAdapter for PlannerRoutedWorker {
         request: &WorkspaceDiscoveryRequest,
     ) -> Result<DiscoveryWorkerResult> {
         self.planner.discover(context, artifacts, request).await
+    }
+
+    async fn consult_planner(
+        &self,
+        context: &PlannerConversationContext,
+        artifacts: &PlannerConversationArtifactSet,
+        request: &PlannerConversationRequest,
+    ) -> Result<PlannerConversationWorkerResult> {
+        self.planner
+            .consult_planner(context, artifacts, request)
+            .await
     }
 
     async fn plan(

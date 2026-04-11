@@ -47,7 +47,10 @@
     "risks": {
       "type": "array",
       "items": { "type": "string" }
-    }
+    },
+    "project_intent": { "$ref": "#/$defs/facts" },
+    "environment_requirements": { "$ref": "#/$defs/facts" },
+    "change_boundaries": { "$ref": "#/$defs/change_boundaries" }
   },
   "$defs": {
     "facts": {
@@ -59,11 +62,17 @@
       "additionalProperties": false,
       "required": ["title", "summary", "evidence"],
       "properties": {
+        "id": { "type": "string" },
         "title": { "type": "string" },
         "summary": { "type": "string" },
         "evidence": {
           "type": "array",
           "items": { "type": "string" }
+        },
+        "tier": {
+          "type": "string",
+          "enum": ["specification", "verification", "structure", "implementation"],
+          "default": "structure"
         }
       }
     },
@@ -72,6 +81,7 @@
       "additionalProperties": false,
       "required": ["name", "root", "evidence"],
       "properties": {
+        "id": { "type": "string" },
         "name": { "type": "string" },
         "root": { "type": "string" },
         "evidence": {
@@ -85,6 +95,7 @@
       "additionalProperties": false,
       "required": ["from", "to", "kind", "evidence"],
       "properties": {
+        "id": { "type": "string" },
         "from": { "type": "string" },
         "to": { "type": "string" },
         "kind": { "type": "string" },
@@ -140,6 +151,7 @@
       "additionalProperties": false,
       "required": ["label", "command", "source"],
       "properties": {
+        "id": { "type": "string" },
         "label": { "type": "string" },
         "command": {
           "type": "array",
@@ -164,6 +176,20 @@
         "dev": {
           "type": "array",
           "items": { "$ref": "#/$defs/command" }
+        }
+      }
+    },
+    "change_boundaries": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "frozen_paths": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "high_risk_paths": {
+          "type": "array",
+          "items": { "type": "string" }
         }
       }
     }

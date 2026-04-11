@@ -34,6 +34,7 @@ export type WorkspaceRunSummary = {
   final_status: string | null;
   current_feature_index: number;
   total_features: number;
+  awaiting_feature_confirmation: boolean;
   active_stage: ActiveRunStage | null;
 };
 
@@ -81,6 +82,7 @@ export type RunState = {
   lifecycle: string;
   final_status: string | null;
   current_feature_index: number;
+  awaiting_feature_confirmation: boolean;
   active_stage: ActiveRunStage | null;
   plan_stage: RunStageRecord | null;
   features: FeatureRunState[];
@@ -94,7 +96,9 @@ export type PromptBundle = {
 export type WorkspaceDiscoveryStatus = {
   workspace_path: string;
   scan_path: string;
+  evidence_path: string;
   profile_path: string;
+  inference_path: string;
   workspace_fingerprint: string;
   profile_fingerprint: string | null;
   last_scanned_at: string;
@@ -120,6 +124,7 @@ export type WorkspaceDiscoveryPhase =
 export type WorkspaceDiscoveryPayload = {
   status: WorkspaceDiscoveryStatus;
   profile_summary: string | null;
+  inference_summary: string | null;
   overview: WorkspaceDiscoveryOverview;
 };
 
@@ -151,6 +156,10 @@ export type WorkspaceDiscoveryOverview = {
   test_commands: string[];
   dev_commands: string[];
   risks: string[];
+  inference_count: number;
+  strongest_inferences: string[];
+  weakest_inferences: string[];
+  average_inference_confidence: number | null;
 };
 
 export type WorkspacePayload = {
@@ -169,6 +178,39 @@ export type LaunchDraft = {
   request_draft: string;
   prompt_overrides: PromptOverrides;
   feature_limit: number | null;
+};
+
+export const PLANNER_CONVERSATION_READINESS = [
+  "needs_clarification",
+  "ready_to_plan",
+  "ready_to_build",
+] as const;
+
+export type PlannerConversationReadiness =
+  (typeof PLANNER_CONVERSATION_READINESS)[number];
+
+export type PlannerConversationTurn = {
+  role: "user" | "planner";
+  content: string;
+};
+
+export type PlannerConversationDraft = {
+  workspace_path: string;
+  config_path: string;
+  request_draft: string;
+  prompt_overrides: PromptOverrides;
+  feature_limit: number | null;
+  conversation: PlannerConversationTurn[];
+};
+
+export type PlannerConversationResponse = {
+  reply_markdown: string;
+  revised_request: string;
+  readiness: PlannerConversationReadiness;
+  open_questions: string[];
+  suggested_features: string[];
+  suggested_feature_limit: number | null;
+  confirmation_points: string[];
 };
 
 export type EditorState = {

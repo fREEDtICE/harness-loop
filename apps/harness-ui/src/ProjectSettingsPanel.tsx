@@ -14,6 +14,9 @@ interface ProjectFormState {
   };
   project: { root_dir: string };
   storage: { runs_dir: string };
+  runtime: {
+    confirm_before_build: boolean;
+  };
   prompts: { planner: string; builder: string; evaluator: string };
   schemas: { planner_output: string; builder_handoff: string; qa_report: string };
 }
@@ -23,6 +26,7 @@ function tomlToProjectForm(raw: string): ProjectFormState {
   const evaluator = (doc.evaluator ?? {}) as Record<string, unknown>;
   const project = (doc.project ?? {}) as Record<string, unknown>;
   const storage = (doc.storage ?? {}) as Record<string, unknown>;
+  const runtime = (doc.runtime ?? {}) as Record<string, unknown>;
   const prompts = (doc.prompts ?? {}) as Record<string, unknown>;
   const schemas = (doc.schemas ?? {}) as Record<string, unknown>;
 
@@ -38,6 +42,9 @@ function tomlToProjectForm(raw: string): ProjectFormState {
     },
     project: { root_dir: String(project.root_dir ?? "..") },
     storage: { runs_dir: String(storage.runs_dir ?? ".loopsmith-runs") },
+    runtime: {
+      confirm_before_build: Boolean(runtime.confirm_before_build ?? false),
+    },
     prompts: {
       planner: String(prompts.planner ?? "prompts/planner.md"),
       builder: String(prompts.builder ?? "prompts/builder.md"),
@@ -69,6 +76,10 @@ function projectFormToToml(form: ProjectFormState, originalRaw: string): string 
 
   doc.project = { ...((doc.project ?? {}) as Record<string, unknown>), root_dir: form.project.root_dir };
   doc.storage = { ...((doc.storage ?? {}) as Record<string, unknown>), runs_dir: form.storage.runs_dir };
+  doc.runtime = {
+    ...((doc.runtime ?? {}) as Record<string, unknown>),
+    confirm_before_build: form.runtime.confirm_before_build,
+  };
   doc.prompts = { ...((doc.prompts ?? {}) as Record<string, unknown>), ...form.prompts };
   doc.schemas = { ...((doc.schemas ?? {}) as Record<string, unknown>), ...form.schemas };
 
@@ -190,6 +201,30 @@ export default function ProjectSettingsPanel({
                 {discovery ? (
                   <DiscoveryStatusPanel discovery={discovery} />
                 ) : null}
+
+                <div className="cfg-group">
+                  <div className="cfg-group-title">{t('settings.runtime')}</div>
+                  <FormRow>
+                    <FormField label={t('settings.confirmBeforeBuild')}>
+                      <label className="switch-row">
+                        <input
+                          type="checkbox"
+                          checked={form.runtime.confirm_before_build}
+                          onChange={(e) =>
+                            setForm({
+                              ...form,
+                              runtime: {
+                                ...form.runtime,
+                                confirm_before_build: e.target.checked,
+                              },
+                            })
+                          }
+                        />
+                      </label>
+                      <p className="field-help">{t('settings.confirmBeforeBuildHelp')}</p>
+                    </FormField>
+                  </FormRow>
+                </div>
 
                 <div className="cfg-group">
                   <div className="cfg-group-title">{t('settings.evaluator')}</div>

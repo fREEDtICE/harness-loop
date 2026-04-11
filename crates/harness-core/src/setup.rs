@@ -368,6 +368,7 @@ qa_report = "schemas/qa-report.json"
 [runtime]
 feature_limit = 1
 max_repair_attempts = 1
+confirm_before_build = false
 
 [runtime.supervision]
 enabled = false

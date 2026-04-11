@@ -12,6 +12,8 @@ pub struct RunRequest {
     pub source_workspace: PathBuf,
     pub feature_limit: Option<usize>,
     #[serde(default)]
+    pub confirm_before_build: bool,
+    #[serde(default)]
     pub selected_config: Option<PathBuf>,
     #[serde(default)]
     pub prompt_overrides: PromptOverrides,
@@ -44,6 +46,8 @@ pub struct RunLaunchSnapshot {
     pub requested_feature_limit: Option<usize>,
     pub effective_feature_limit: usize,
     pub feature_limit_is_hard: bool,
+    #[serde(default)]
+    pub confirm_before_build: bool,
     pub user_request: String,
     pub prompts: PromptSnapshot,
     #[serde(default)]
@@ -58,6 +62,56 @@ pub struct PlanningRequest {
     pub feature_limit_is_hard: bool,
     pub service_names: Vec<String>,
     pub verification_commands: Vec<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlannerConversationRole {
+    User,
+    Planner,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlannerConversationTurn {
+    pub role: PlannerConversationRole,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlannerConversationRequest {
+    pub request_draft: String,
+    pub feature_limit: Option<usize>,
+    #[serde(default)]
+    pub conversation: Vec<PlannerConversationTurn>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlannerConversationReadiness {
+    NeedsClarification,
+    ReadyToPlan,
+    ReadyToBuild,
+}
+
+impl PlannerConversationReadiness {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NeedsClarification => "needs_clarification",
+            Self::ReadyToPlan => "ready_to_plan",
+            Self::ReadyToBuild => "ready_to_build",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlannerConversationResponse {
+    pub reply_markdown: String,
+    pub revised_request: String,
+    pub readiness: PlannerConversationReadiness,
+    pub open_questions: Vec<String>,
+    pub suggested_features: Vec<String>,
+    pub suggested_feature_limit: Option<usize>,
+    pub confirmation_points: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -409,6 +463,8 @@ pub struct RunState {
     pub final_status: Option<QaStatus>,
     pub current_feature_index: usize,
     #[serde(default)]
+    pub awaiting_feature_confirmation: bool,
+    #[serde(default)]
     pub active_stage: Option<ActiveRunStage>,
     pub plan_stage: Option<RunStageRecord>,
     pub features: Vec<FeatureRunState>,
@@ -637,6 +693,110 @@ impl PlanningRequest {
         }
 
         checkpoints
+    }
+}
+
+impl PlannerConversationRequest {
+    pub fn synthesize_response(&self) -> PlannerConversationResponse {
+        let trimmed_request = normalized_request(&self.request_draft);
+        let feature_limit = self.feature_limit.unwrap_or(3).max(1);
+        let planning_request = PlanningRequest {
+            user_request: if trimmed_request.is_empty() {
+                self.conversation
+                    .iter()
+                    .filter(|turn| turn.role == PlannerConversationRole::User)
+                    .map(|turn| turn.content.trim())
+                    .filter(|content| !content.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            } else {
+                trimmed_request.clone()
+            },
+            feature_limit,
+            feature_limit_is_hard: self.feature_limit.is_some(),
+            service_names: Vec::new(),
+            verification_commands: Vec::new(),
+        };
+        let synthesized_plan = if planning_request.user_request.trim().is_empty() {
+            None
+        } else {
+            Some(planning_request.synthesize_plan())
+        };
+        let latest_user_message = self
+            .conversation
+            .iter()
+            .rev()
+            .find(|turn| turn.role == PlannerConversationRole::User)
+            .map(|turn| turn.content.trim())
+            .filter(|content| !content.is_empty());
+        let readiness = if trimmed_request.is_empty() {
+            PlannerConversationReadiness::NeedsClarification
+        } else if self.feature_limit.is_some() {
+            PlannerConversationReadiness::ReadyToBuild
+        } else {
+            PlannerConversationReadiness::ReadyToPlan
+        };
+
+        let reply_markdown = if trimmed_request.is_empty() {
+            "Start by describing the requested outcome, the user-facing behavior you expect, and any hard constraints the planner must preserve.".to_string()
+        } else if let Some(question) = latest_user_message {
+            format!(
+                "I used the current request draft as the source of truth and folded in your latest question:\n\n> {}\n\nThe scope is ready for planning. Review the suggested feature slices and confirm the ones that should enter build.",
+                question
+            )
+        } else {
+            "The current request draft is specific enough to plan. Review the proposed feature slices and tighten any acceptance criteria that still feel ambiguous.".to_string()
+        };
+
+        let suggested_features = synthesized_plan
+            .as_ref()
+            .map(|plan| {
+                plan.features
+                    .iter()
+                    .map(|feature| feature.title.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let confirmation_points = synthesized_plan
+            .as_ref()
+            .map(|plan| {
+                plan.features
+                    .iter()
+                    .flat_map(|feature| feature.acceptance_criteria.iter().cloned())
+                    .take(4)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_else(|| {
+                vec![
+                    "Clarify the user-visible outcome.".to_string(),
+                    "Name the files, routes, or modules most likely to change.".to_string(),
+                ]
+            });
+        let open_questions = if trimmed_request.is_empty() {
+            vec![
+                "What user journey should this change improve?".to_string(),
+                "What must the planner avoid touching?".to_string(),
+            ]
+        } else {
+            synthesized_plan
+                .as_ref()
+                .map(|plan| plan.risks.iter().take(3).cloned().collect::<Vec<_>>())
+                .unwrap_or_default()
+        };
+
+        PlannerConversationResponse {
+            reply_markdown,
+            revised_request: if trimmed_request.is_empty() {
+                latest_user_message.unwrap_or_default().to_string()
+            } else {
+                trimmed_request
+            },
+            readiness,
+            open_questions,
+            suggested_features,
+            suggested_feature_limit: Some(feature_limit),
+            confirmation_points,
+        }
     }
 }
 

@@ -14,6 +14,7 @@
     "opened": "Opened {{name}}.",
     "startingRun": "Starting harness run.",
     "runCompleted": "Harness run completed.",
+    "awaitingFeatureConfirmation": "Plan ready. Confirm the feature slices before build starts.",
     "runFailed": "Harness run failed.",
     "resuming": "Resuming {{name}}.",
     "resumeCompleted": "Harness resume completed.",
@@ -28,6 +29,9 @@
     "save": "Save",
     "saving": "Saving…",
     "startRun": "Start Run",
+    "askPlanner": "Ask Planner",
+    "applySuggestedRequest": "Apply Suggested Request",
+    "confirmBuild": "Confirm & Build",
     "runningEllipsis": "Running…",
     "back": "← Back to Timeline",
     "resetDefaults": "Reset to Defaults",
@@ -44,7 +48,25 @@
     "builder": "Builder",
     "evaluator": "Evaluator",
     "featureLimit": "Feature Limit",
-    "allFeatures": "All features"
+    "allFeatures": "All features",
+    "plannerChat": "Planner Chat",
+    "plannerChatHelp": "Discuss scope, missing details, and acceptance criteria before the run starts.",
+    "plannerChatEmpty": "Ask the planner to refine the requirement, split features, or call out unclear constraints.",
+    "plannerChatPlaceholder": "Ask about scope, edge cases, missing acceptance criteria, or layering risks.",
+    "askingPlanner": "Asking planner…",
+    "confirmBeforeBuild": "Pause after planning and require confirmation before build",
+    "confirmBeforeBuildHelp": "When enabled, the run stops after the planner emits feature slices. Review the plan, then confirm to continue into build.",
+    "you": "You",
+    "plannerAssistant": "Planner",
+    "suggestedFeatures": "Suggested features",
+    "confirmationPoints": "Points to confirm before build",
+    "openQuestions": "Open questions",
+    "readiness": {
+      "idle": "Not consulted yet",
+      "needs_clarification": "Needs clarification",
+      "ready_to_plan": "Ready to plan",
+      "ready_to_build": "Ready to build"
+    }
   },
   "timeline": {
     "noRuns": "No runs yet. Click '+ New Run' to start your first loop.",
@@ -53,7 +75,8 @@
     "attempt": "attempt {{n}}",
     "repairs": "repairs {{n}}",
     "progress": "Feature {{current}}/{{total}} · {{stage}} attempt {{attempt}}",
-    "summary": "{{total}} features · {{lifecycle}}"
+    "summary": "{{total}} features · {{lifecycle}}",
+    "awaitingFeatureConfirmation": "Plan ready. Confirm the feature slices before build starts."
   },
   "discovery": {
     "idle": "Idle",
@@ -76,7 +99,8 @@
     "request": "Request",
     "noOutput": "(no output yet)",
     "logs": "Logs",
-    "plan": "Plan"
+    "plan": "Plan",
+    "awaitingFeatureConfirmation": "Awaiting feature confirmation"
   },
   "artifacts": {
     "contract": "Contract",
@@ -121,6 +145,8 @@
     "featureLimit": "Feature Limit",
     "maxRepairAttempts": "Max Repair Attempts",
     "continueAfterFailure": "Continue After Failure",
+    "confirmBeforeBuild": "Require Confirmation Before Build",
+    "confirmBeforeBuildHelp": "When enabled, the run stops after the planner emits feature slices. Review the plan, then confirm to continue into build.",
     "workspace": "Workspace",
     "isolation": "Isolation",
     "direct": "Direct",
@@ -143,6 +169,7 @@
     "discovery": "Discovery",
     "discoveryPhase": "Discovery Phase",
     "discoverySummary": "Profile Summary",
+    "inferenceSummary": "Inference Summary",
     "lastScan": "Last Scan",
     "fallbackProfile": "Fallback Profile",
     "workspaceFingerprint": "Workspace Fingerprint",
@@ -159,6 +186,8 @@
     "buildCommands": "Build Commands",
     "testCommands": "Test Commands",
     "devCommands": "Dev Commands",
+    "inferences": "Inferences",
+    "avgInferenceConfidence": "Avg Inference Confidence",
     "techStack": "Tech Stack",
     "keyConcepts": "Key Concepts",
     "layeringSummary": "Layering Summary",
@@ -169,6 +198,10 @@
     "no": "No",
     "profilePath": "Profile Path",
     "scanPath": "Scan Path",
+    "evidencePath": "Evidence Path",
+    "inferencePath": "Inference Path",
+    "strongestInferences": "Strongest Inferences",
+    "weakestInferences": "Weakest Inferences",
     "lastRefresh": "Last Refresh",
     "refreshError": "Refresh Error",
     "dimensions": "Dimensions",

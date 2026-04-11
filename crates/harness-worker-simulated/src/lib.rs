@@ -7,12 +7,13 @@ use loopsmith_core::{
     config::SimulationWorkerConfig,
     discovery::{DiscoveryArtifactSet, WorkspaceDiscoveryRequest},
     domain::{
-        BuilderHandoff, EvaluationRequest, PlanningRequest, QaCheck, QaReport, QaStatus,
-        WorkerResult, WorkerStatus,
+        BuilderHandoff, EvaluationRequest, PlannerConversationRequest, PlanningRequest, QaCheck,
+        QaReport, QaStatus, WorkerResult, WorkerStatus,
     },
     worker::{
-        DiscoveryContext, DiscoveryWorkerResult, WorkerAdapter, WorkerContext,
-        render_discovery_prompt, render_worker_prompt,
+        DiscoveryContext, DiscoveryWorkerResult, PlannerConversationArtifactSet,
+        PlannerConversationContext, PlannerConversationWorkerResult, WorkerAdapter, WorkerContext,
+        render_discovery_prompt, render_planner_conversation_prompt, render_worker_prompt,
     },
 };
 use serde::Serialize;
@@ -107,8 +108,8 @@ impl WorkerAdapter for SimulatedWorker {
         request: &WorkspaceDiscoveryRequest,
     ) -> Result<DiscoveryWorkerResult> {
         let prompt = render_discovery_prompt(context, &context.workspace_profile_schema, request)?;
-        let output = serde_json::to_string_pretty(&request.synthesize_profile())
-            .context("failed to serialize simulated workspace profile")?;
+        let output = serde_json::to_string_pretty(&request.synthesize_inference())
+            .context("failed to serialize simulated workspace inference")?;
         self.write_discovery_result(
             artifacts,
             vec!["simulated".to_string(), "discover".to_string()],
@@ -139,6 +140,36 @@ impl WorkerAdapter for SimulatedWorker {
             prompt,
             output,
         )
+    }
+
+    async fn consult_planner(
+        &self,
+        context: &PlannerConversationContext,
+        artifacts: &PlannerConversationArtifactSet,
+        request: &PlannerConversationRequest,
+    ) -> Result<PlannerConversationWorkerResult> {
+        let prompt = render_planner_conversation_prompt(context, request)?;
+        let output = serde_json::to_string_pretty(&request.synthesize_response())
+            .context("failed to serialize simulated planner conversation")?;
+        fs::write(&artifacts.prompt_file, prompt)
+            .with_context(|| format!("failed to write {}", artifacts.prompt_file.display()))?;
+        fs::write(&artifacts.stdout_log, "simulated\n")
+            .with_context(|| format!("failed to write {}", artifacts.stdout_log.display()))?;
+        fs::write(&artifacts.stderr_log, "")
+            .with_context(|| format!("failed to write {}", artifacts.stderr_log.display()))?;
+        fs::write(&artifacts.output_file, output)
+            .with_context(|| format!("failed to write {}", artifacts.output_file.display()))?;
+
+        Ok(PlannerConversationWorkerResult {
+            status: WorkerStatus::Prepared,
+            command: vec!["simulated".to_string(), "planner-consult".to_string()],
+            prompt_file: artifacts.prompt_file.clone(),
+            output_file: artifacts.output_file.clone(),
+            stdout_log: artifacts.stdout_log.clone(),
+            stderr_log: artifacts.stderr_log.clone(),
+            notes: vec!["Simulated planner conversation emitted deterministic output.".to_string()],
+            session_id: Some(format!("{}-planner-consult-01", self.config.session_prefix)),
+        })
     }
 
     async fn build(

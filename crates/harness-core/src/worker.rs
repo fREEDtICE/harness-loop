@@ -12,7 +12,8 @@ use crate::{
     artifacts::{FeatureLayout, RunLayout, StageArtifactSet},
     discovery::{DiscoveryArtifactSet, WorkspaceDiscoveryRequest},
     domain::{
-        BuilderHandoff, EvaluationRequest, FeatureContract, PlanningRequest, QaReport, WorkerResult,
+        BuilderHandoff, EvaluationRequest, FeatureContract, PlannerConversationRequest, QaReport,
+        WorkerResult,
     },
 };
 
@@ -38,8 +39,37 @@ pub struct DiscoveryContext {
     pub workspace_profile_schema: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+pub struct PlannerConversationContext {
+    pub workspace: PathBuf,
+    pub planner_conversation_prompt: PathBuf,
+    pub planner_conversation_schema: PathBuf,
+    pub workspace_profile_artifact: Option<PathBuf>,
+    pub workspace_profile_context: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PlannerConversationArtifactSet {
+    pub prompt_file: PathBuf,
+    pub output_file: PathBuf,
+    pub stdout_log: PathBuf,
+    pub stderr_log: PathBuf,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct DiscoveryWorkerResult {
+    pub status: crate::domain::WorkerStatus,
+    pub command: Vec<String>,
+    pub prompt_file: PathBuf,
+    pub output_file: PathBuf,
+    pub stdout_log: PathBuf,
+    pub stderr_log: PathBuf,
+    pub notes: Vec<String>,
+    pub session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PlannerConversationWorkerResult {
     pub status: crate::domain::WorkerStatus,
     pub command: Vec<String>,
     pub prompt_file: PathBuf,
@@ -126,6 +156,46 @@ pub fn render_discovery_prompt(
     ))
 }
 
+pub fn render_planner_conversation_prompt(
+    context: &PlannerConversationContext,
+    payload: &PlannerConversationRequest,
+) -> Result<String> {
+    let template = fs::read_to_string(&context.planner_conversation_prompt).with_context(|| {
+        format!(
+            "failed to read planner conversation prompt {}",
+            context.planner_conversation_prompt.display()
+        )
+    })?;
+    let schema = fs::read_to_string(&context.planner_conversation_schema).with_context(|| {
+        format!(
+            "failed to read {}",
+            context.planner_conversation_schema.display()
+        )
+    })?;
+    let payload = serde_json::to_string_pretty(payload).context("failed to serialize payload")?;
+    let workspace_profile_context = context.workspace_profile_artifact.as_ref().map_or_else(
+        || {
+            "Workspace Profile Context:\n- workspace_profile_artifact: -\n- workspace_profile_summary: -\n".to_string()
+        },
+        |path| {
+            let summary = context
+                .workspace_profile_context
+                .as_deref()
+                .unwrap_or("No compact profile summary was available.");
+            format!(
+                "Workspace Profile Context:\n- workspace_profile_artifact: {}\n{}\n",
+                path.display(),
+                summary
+            )
+        },
+    );
+
+    Ok(format!(
+        "{template}\n\nPlanner Consultation Context:\n- stage: planner_consult\n- workspace: {}\n{workspace_profile_context}\nReturn Format:\nReturn only JSON matching this schema:\n{schema}\n\nPayload:\n{payload}\n",
+        context.workspace.display(),
+    ))
+}
+
 #[async_trait]
 pub trait WorkerAdapter: Send + Sync {
     async fn discover(
@@ -135,11 +205,18 @@ pub trait WorkerAdapter: Send + Sync {
         request: &WorkspaceDiscoveryRequest,
     ) -> Result<DiscoveryWorkerResult>;
 
+    async fn consult_planner(
+        &self,
+        context: &PlannerConversationContext,
+        artifacts: &PlannerConversationArtifactSet,
+        request: &PlannerConversationRequest,
+    ) -> Result<PlannerConversationWorkerResult>;
+
     async fn plan(
         &self,
         context: &WorkerContext,
         artifacts: &StageArtifactSet,
-        request: &PlanningRequest,
+        request: &crate::domain::PlanningRequest,
     ) -> Result<WorkerResult>;
 
     async fn build(
@@ -184,11 +261,20 @@ where
         (**self).discover(context, artifacts, request).await
     }
 
+    async fn consult_planner(
+        &self,
+        context: &PlannerConversationContext,
+        artifacts: &PlannerConversationArtifactSet,
+        request: &PlannerConversationRequest,
+    ) -> Result<PlannerConversationWorkerResult> {
+        (**self).consult_planner(context, artifacts, request).await
+    }
+
     async fn plan(
         &self,
         context: &WorkerContext,
         artifacts: &StageArtifactSet,
-        request: &PlanningRequest,
+        request: &crate::domain::PlanningRequest,
     ) -> Result<WorkerResult> {
         (**self).plan(context, artifacts, request).await
     }

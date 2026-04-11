@@ -87,6 +87,8 @@ export default function WorkspaceTimeline({
                   <span className="tl-progress">
                     {isPendingLaunchRun(run)
                       ? pendingLaunchProgress
+                      : run.awaiting_feature_confirmation
+                      ? t('timeline.awaitingFeatureConfirmation')
                       : run.lifecycle === "running" && run.active_stage
                       ? t('timeline.progress', { current: run.current_feature_index, total: run.total_features, stage: run.active_stage.stage, attempt: run.active_stage.attempt })
                       : t('timeline.summary', { total: run.total_features, lifecycle: run.lifecycle })}
@@ -100,7 +102,9 @@ export default function WorkspaceTimeline({
                       }}
                       disabled={isRunning}
                     >
-                      {t('actions.resume')}
+                      {run.awaiting_feature_confirmation
+                        ? t('actions.confirmBuild')
+                        : t('actions.resume')}
                     </button>
                   ) : !isPendingLaunchRun(run) && run.lifecycle !== "completed" ? (
                     <button

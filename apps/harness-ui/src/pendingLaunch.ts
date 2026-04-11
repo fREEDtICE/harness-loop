@@ -25,6 +25,7 @@ export function createPendingLaunch(
       final_status: null,
       current_feature_index: 0,
       total_features: 0,
+      awaiting_feature_confirmation: false,
       active_stage: null,
     },
   };

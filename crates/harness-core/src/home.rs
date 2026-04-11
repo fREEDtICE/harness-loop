@@ -15,6 +15,7 @@ const TEMPLATE_BUILDER: &str = include_str!("../../../prompts/builder.md");
 const TEMPLATE_EVALUATOR: &str = include_str!("../../../prompts/evaluator.md");
 
 const SCHEMA_WORKSPACE_PROFILE: &str = include_str!("../../../schemas/workspace-profile.json");
+const SCHEMA_WORKSPACE_INFERENCE: &str = include_str!("../../../schemas/workspace-inference.json");
 const SCHEMA_PLANNER_OUTPUT: &str = include_str!("../../../schemas/planner-output.json");
 const SCHEMA_BUILDER_HANDOFF: &str = include_str!("../../../schemas/builder-handoff.json");
 const SCHEMA_QA_REPORT: &str = include_str!("../../../schemas/qa-report.json");
@@ -63,6 +64,10 @@ const GLOBAL_TEMPLATES: &[TemplateFile] = &[
     TemplateFile {
         relative_path: "schemas/workspace-profile.json",
         content: TemplateContent::Static(SCHEMA_WORKSPACE_PROFILE),
+    },
+    TemplateFile {
+        relative_path: "schemas/workspace-inference.json",
+        content: TemplateContent::Static(SCHEMA_WORKSPACE_INFERENCE),
     },
     TemplateFile {
         relative_path: "schemas/planner-output.json",
@@ -210,6 +215,10 @@ fn ensure_workspace_templates(ws_dir: &Path) -> Result<()> {
         ("prompts/builder.md", TEMPLATE_BUILDER),
         ("prompts/evaluator.md", TEMPLATE_EVALUATOR),
         ("schemas/workspace-profile.json", SCHEMA_WORKSPACE_PROFILE),
+        (
+            "schemas/workspace-inference.json",
+            SCHEMA_WORKSPACE_INFERENCE,
+        ),
         ("schemas/planner-output.json", SCHEMA_PLANNER_OUTPUT),
         ("schemas/builder-handoff.json", SCHEMA_BUILDER_HANDOFF),
         ("schemas/qa-report.json", SCHEMA_QA_REPORT),
@@ -264,6 +273,7 @@ fn copy_global_to_workspace(global_home: &Path, ws_dir: &Path) -> Result<()> {
         &ws_dir.join("schemas"),
         &[
             "workspace-profile.json",
+            "workspace-inference.json",
             "planner-output.json",
             "builder-handoff.json",
             "qa-report.json",
@@ -353,13 +363,14 @@ const RUNTIME_PATCH_KEYS: &[&str] = &[
     "feature_limit",
     "max_repair_attempts",
     "continue_after_failure",
+    "confirm_before_build",
 ];
 
 /// Patches a workspace config with values from the global config.
 ///
 /// Overwrites `[worker]` and `[workspace]` sections entirely.
-/// For `[runtime]`, only patches `feature_limit`, `max_repair_attempts`, and
-/// `continue_after_failure` — preserving workspace-specific sub-tables like
+/// For `[runtime]`, only patches `feature_limit`, `max_repair_attempts`,
+/// `continue_after_failure`, and `confirm_before_build` — preserving workspace-specific sub-tables like
 /// `[runtime.supervision]`, `[[runtime.services]]`, and `[[runtime.stacks]]`.
 pub fn patch_workspace_from_global(workspace_path: &Path, global_toml: &str) -> Result<()> {
     let ws_config_path = workspace_config_path(workspace_path);

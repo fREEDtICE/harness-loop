@@ -111,6 +111,7 @@ where
             lifecycle: RunLifecycleStatus::Planning,
             final_status: None,
             current_feature_index: 0,
+            awaiting_feature_confirmation: false,
             active_stage: None,
             plan_stage: None,
             features: Vec::new(),
@@ -126,6 +127,13 @@ where
             feature_limit_is_hard,
         )
         .await?;
+
+        if request.confirm_before_build {
+            state.awaiting_feature_confirmation = true;
+            state.lifecycle = RunLifecycleStatus::Running;
+            self.checkpoint(&mut state)?;
+            return Ok(state);
+        }
 
         self.drive_run_with_runtime(&mut state, &layout, &runtime_plan)
             .await?;
@@ -149,6 +157,17 @@ where
 
         if state.lifecycle == RunLifecycleStatus::Passed {
             return Ok(state);
+        }
+
+        if state.awaiting_feature_confirmation {
+            info!(
+                run_id = %state.run_id,
+                "run confirmed after plan review; continuing into build"
+            );
+            state.awaiting_feature_confirmation = false;
+            state.lifecycle = RunLifecycleStatus::Running;
+            state.active_stage = None;
+            self.checkpoint(&mut state)?;
         }
 
         if state.lifecycle == RunLifecycleStatus::Failed {
@@ -846,6 +865,7 @@ where
             requested_feature_limit: request.feature_limit,
             effective_feature_limit,
             feature_limit_is_hard,
+            confirm_before_build: request.confirm_before_build,
             user_request: request.user_request.clone(),
             prompts,
             workspace_profile: request.workspace_profile.as_ref().map(|selection| {
@@ -1061,11 +1081,15 @@ mod tests {
         },
         domain::{
             ActiveRunStage, BuilderHandoff, EvaluationRequest, Feature, FeatureContract,
-            FeatureLifecycleStatus, PlanDocument, PromptOverrides, QaCheck, QaReport, QaStatus,
-            RunLaunchSnapshot, RunLifecycleStatus, RunRequest, RunStageRecord, RunState,
-            WorkerResult, WorkerStage, WorkerStatus,
+            FeatureLifecycleStatus, PlanDocument, PlannerConversationRequest, PromptOverrides,
+            QaCheck, QaReport, QaStatus, RunLaunchSnapshot, RunLifecycleStatus, RunRequest,
+            RunStageRecord, RunState, WorkerResult, WorkerStage, WorkerStatus,
         },
-        worker::{DiscoveryContext, DiscoveryWorkerResult, WorkerAdapter, WorkerContext},
+        worker::{
+            DiscoveryContext, DiscoveryWorkerResult, PlannerConversationArtifactSet,
+            PlannerConversationContext, PlannerConversationWorkerResult, WorkerAdapter,
+            WorkerContext,
+        },
         workspace::WorkspaceIsolation,
     };
 
@@ -1131,6 +1155,29 @@ mod tests {
             fs::write(&artifacts.output_file, serde_json::to_vec_pretty(&plan)?)?;
 
             Ok(worker_result(artifacts, WorkerStage::Plan, None))
+        }
+
+        async fn consult_planner(
+            &self,
+            _context: &PlannerConversationContext,
+            artifacts: &PlannerConversationArtifactSet,
+            request: &PlannerConversationRequest,
+        ) -> Result<PlannerConversationWorkerResult> {
+            let response = request.synthesize_response();
+            fs::write(
+                &artifacts.output_file,
+                serde_json::to_vec_pretty(&response)?,
+            )?;
+            Ok(PlannerConversationWorkerResult {
+                status: WorkerStatus::Prepared,
+                command: vec!["fake".to_string(), "planner-consult".to_string()],
+                prompt_file: artifacts.prompt_file.clone(),
+                output_file: artifacts.output_file.clone(),
+                stdout_log: artifacts.stdout_log.clone(),
+                stderr_log: artifacts.stderr_log.clone(),
+                notes: Vec::new(),
+                session_id: None,
+            })
         }
 
         async fn build(
@@ -1232,6 +1279,7 @@ mod tests {
                 user_request: "Build a harness".to_string(),
                 source_workspace,
                 feature_limit: Some(2),
+                confirm_before_build: false,
                 selected_config: None,
                 prompt_overrides: Default::default(),
                 workspace_profile: None,
@@ -1281,6 +1329,7 @@ mod tests {
                 user_request: "Build a harness".to_string(),
                 source_workspace,
                 feature_limit: Some(2),
+                confirm_before_build: false,
                 selected_config: Some(config_file.clone()),
                 prompt_overrides: PromptOverrides {
                     planner: Some("planner override\n".to_string()),
@@ -1336,6 +1385,7 @@ mod tests {
                 user_request: "Build a harness".to_string(),
                 source_workspace,
                 feature_limit: None,
+                confirm_before_build: false,
                 selected_config: None,
                 prompt_overrides: Default::default(),
                 workspace_profile: None,
@@ -1373,9 +1423,11 @@ mod tests {
             repositories: Vec::new(),
             dependency_relationships: Vec::new(),
             api_contracts: vec![DiscoveryFact {
+                id: "api_contract.001".to_string(),
                 title: "HTTP route evidence in src/api.rs".to_string(),
                 summary: "Route signatures: router.get(\"/health\").".to_string(),
                 evidence: vec![PathBuf::from("src/api.rs")],
+                tier: crate::discovery::NegentropyTier::Implementation,
             }],
             layering: LayeringProfile {
                 summary: "Detected layers: ui, service, core.".to_string(),
@@ -1390,12 +1442,17 @@ mod tests {
             e2e_test_cases: Vec::new(),
             auth: Vec::new(),
             coding_conventions: vec![DiscoveryFact {
+                id: "coding_convention.001".to_string(),
                 title: ".editorconfig".to_string(),
                 summary: "root = true".to_string(),
                 evidence: vec![PathBuf::from(".editorconfig")],
+                tier: crate::discovery::NegentropyTier::Specification,
             }],
             commands: CommandCatalog::default(),
             risks: Vec::new(),
+            project_intent: Vec::new(),
+            environment_requirements: Vec::new(),
+            change_boundaries: crate::discovery::ChangeBoundaryProfile::default(),
         };
         let profile_fingerprint = crate::discovery::profile_fingerprint(&profile)?;
 
@@ -1404,6 +1461,7 @@ mod tests {
                 user_request: "Build a harness".to_string(),
                 source_workspace,
                 feature_limit: Some(1),
+                confirm_before_build: false,
                 selected_config: None,
                 prompt_overrides: Default::default(),
                 workspace_profile: Some(WorkspaceProfileSelection {
@@ -1412,6 +1470,12 @@ mod tests {
                         .path()
                         .join("workspace/.loopsmith/discovery/profile.json"),
                     scan_path: temp.path().join("workspace/.loopsmith/discovery/scan.json"),
+                    evidence_path: temp
+                        .path()
+                        .join("workspace/.loopsmith/discovery/evidence.json"),
+                    inference_path: temp
+                        .path()
+                        .join("workspace/.loopsmith/discovery/inference.json"),
                     status_path: temp
                         .path()
                         .join("workspace/.loopsmith/discovery/status.json"),
@@ -1475,6 +1539,57 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn controller_waits_for_feature_confirmation_before_build() -> Result<()> {
+        let temp = tempdir()?;
+        let source_workspace = temp.path().join("workspace");
+        fs::create_dir_all(&source_workspace)?;
+
+        let config = resolved_config(temp.path(), temp.path().join(".loopsmith-runs"));
+        let artifacts = FileArtifactStore::new(config.storage.runs_dir.clone());
+        let shared_state = Arc::new(Mutex::new(FakeState::default()));
+        let worker = FakeWorker {
+            state: shared_state.clone(),
+        };
+        let controller = HarnessController::new(config, artifacts, worker);
+
+        let planned = controller
+            .start_run(RunRequest {
+                user_request: "Build a harness".to_string(),
+                source_workspace,
+                feature_limit: Some(1),
+                confirm_before_build: true,
+                selected_config: None,
+                prompt_overrides: Default::default(),
+                workspace_profile: None,
+            })
+            .await?;
+
+        assert_eq!(planned.lifecycle, RunLifecycleStatus::Running);
+        assert!(planned.awaiting_feature_confirmation);
+        assert!(
+            shared_state
+                .lock()
+                .expect("lock")
+                .observed_build_active_stage
+                .is_none()
+        );
+
+        let resumed = controller.resume_run(&planned.run_root).await?;
+
+        assert!(!resumed.awaiting_feature_confirmation);
+        assert_eq!(resumed.lifecycle, RunLifecycleStatus::Passed);
+        assert!(
+            shared_state
+                .lock()
+                .expect("lock")
+                .observed_build_active_stage
+                .is_some()
+        );
+
+        Ok(())
+    }
+
     #[test]
     fn inspect_reads_persisted_state() -> Result<()> {
         let temp = tempdir()?;
@@ -1507,6 +1622,7 @@ mod tests {
             lifecycle: RunLifecycleStatus::Running,
             final_status: None,
             current_feature_index: 0,
+            awaiting_feature_confirmation: false,
             active_stage: None,
             plan_stage: Some(RunStageRecord {
                 stage: WorkerStage::Plan,
@@ -1583,6 +1699,7 @@ mod tests {
             },
             schemas: ResolvedSchemaConfig {
                 workspace_profile: schemas.join("workspace-profile.json"),
+                workspace_inference: schemas.join("workspace-inference.json"),
                 planner_output: schemas.join("planner-output.json"),
                 builder_handoff: schemas.join("builder-handoff.json"),
                 qa_report: schemas.join("qa-report.json"),
@@ -1591,6 +1708,7 @@ mod tests {
                 feature_limit: 2,
                 max_repair_attempts: 1,
                 continue_after_failure: false,
+                confirm_before_build: false,
                 supervision: RuntimeSupervisionConfig::default(),
                 services: vec![ServiceConfig {
                     name: "web".to_string(),

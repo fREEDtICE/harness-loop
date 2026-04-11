@@ -970,6 +970,9 @@ export default function RunDetail({
           <span className="workspace-meta run-detail-feature-status">
             📦 {t('timeline.feature', { current: completedCount, total: run.features.length })}
           </span>
+          {run.awaiting_feature_confirmation ? (
+            <span className="subtle-pill">{t('run.awaitingFeatureConfirmation')}</span>
+          ) : null}
           <span className="run-detail-meta-spacer" />
           {run.lifecycle === "running" ? (
             <button
@@ -977,7 +980,9 @@ export default function RunDetail({
               onClick={() => onResume(run.run_root)}
               disabled={isRunning}
             >
-              {t('actions.resume')}
+              {run.awaiting_feature_confirmation
+                ? t('actions.confirmBuild')
+                : t('actions.resume')}
             </button>
           ) : run.lifecycle !== "completed" ? (
             <button

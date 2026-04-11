@@ -14,6 +14,7 @@
     "opened": "已打开 {{name}}。",
     "startingRun": "正在启动运行。",
     "runCompleted": "运行已完成。",
+    "awaitingFeatureConfirmation": "计划已生成。请先确认功能切片，再开始构建。",
     "runFailed": "运行失败。",
     "resuming": "正在恢复 {{name}}。",
     "resumeCompleted": "恢复运行已完成。",
@@ -28,6 +29,9 @@
     "save": "保存",
     "saving": "保存中…",
     "startRun": "开始运行",
+    "askPlanner": "询问 Planner",
+    "applySuggestedRequest": "应用建议后的需求",
+    "confirmBuild": "确认后开始构建",
     "runningEllipsis": "运行中…",
     "back": "← 返回时间线",
     "resetDefaults": "恢复默认值",
@@ -44,7 +48,25 @@
     "builder": "Builder",
     "evaluator": "Evaluator",
     "featureLimit": "功能上限",
-    "allFeatures": "所有功能"
+    "allFeatures": "所有功能",
+    "plannerChat": "Planner 对话",
+    "plannerChatHelp": "在运行开始前讨论范围、缺失细节和验收标准。",
+    "plannerChatEmpty": "可以让 Planner 帮你收敛需求、拆分功能，或者指出约束还不够清晰的地方。",
+    "plannerChatPlaceholder": "询问范围、边界情况、缺失的验收标准或分层风险。",
+    "askingPlanner": "正在询问 Planner…",
+    "confirmBeforeBuild": "在构建前暂停，并要求先确认功能切片",
+    "confirmBeforeBuildHelp": "开启后，运行会在 Planner 产出功能切片后暂停。先审阅计划，再确认进入构建。",
+    "you": "你",
+    "plannerAssistant": "Planner",
+    "suggestedFeatures": "建议的功能切片",
+    "confirmationPoints": "构建前需要确认的点",
+    "openQuestions": "待确认问题",
+    "readiness": {
+      "idle": "尚未咨询",
+      "needs_clarification": "仍需澄清",
+      "ready_to_plan": "可以进入规划",
+      "ready_to_build": "可以进入构建"
+    }
   },
   "timeline": {
     "noRuns": "暂无运行记录。点击「+ 新建运行」开始。",
@@ -53,7 +75,8 @@
     "attempt": "第 {{n}} 次",
     "repairs": "修复 {{n}} 次",
     "progress": "功能 {{current}}/{{total}} · {{stage}} 第 {{attempt}} 次",
-    "summary": "{{total}} 个功能 · {{lifecycle}}"
+    "summary": "{{total}} 个功能 · {{lifecycle}}",
+    "awaitingFeatureConfirmation": "计划已生成。请先确认功能切片，再开始构建。"
   },
   "discovery": {
     "idle": "空闲",
@@ -76,7 +99,8 @@
     "request": "需求",
     "noOutput": "（暂无输出）",
     "logs": "日志",
-    "plan": "Plan"
+    "plan": "Plan",
+    "awaitingFeatureConfirmation": "等待确认功能切片"
   },
   "artifacts": {
     "contract": "Contract",
@@ -121,6 +145,8 @@
     "featureLimit": "功能上限",
     "maxRepairAttempts": "最大修复次数",
     "continueAfterFailure": "失败后继续",
+    "confirmBeforeBuild": "构建前必须确认",
+    "confirmBeforeBuildHelp": "开启后，运行会在 Planner 产出功能切片后暂停。先审阅计划，再确认进入构建。",
     "workspace": "工作空间",
     "isolation": "隔离方式",
     "direct": "直接",
@@ -143,6 +169,7 @@
     "discovery": "Discovery",
     "discoveryPhase": "Discovery 阶段",
     "discoverySummary": "画像摘要",
+    "inferenceSummary": "推断摘要",
     "lastScan": "最近扫描",
     "fallbackProfile": "回退画像",
     "workspaceFingerprint": "工作空间指纹",
@@ -159,6 +186,8 @@
     "buildCommands": "构建命令",
     "testCommands": "测试命令",
     "devCommands": "开发命令",
+    "inferences": "推断条目",
+    "avgInferenceConfidence": "平均推断置信度",
     "techStack": "技术栈",
     "keyConcepts": "关键概念",
     "layeringSummary": "分层摘要",
@@ -169,6 +198,10 @@
     "no": "否",
     "profilePath": "Profile Path",
     "scanPath": "Scan Path",
+    "evidencePath": "Evidence Path",
+    "inferencePath": "Inference Path",
+    "strongestInferences": "高置信推断",
+    "weakestInferences": "低置信推断",
     "lastRefresh": "Last Refresh",
     "refreshError": "Refresh Error",
     "dimensions": "维度",

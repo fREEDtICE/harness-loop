@@ -284,6 +284,8 @@ fn print_discovery_selection(
             .map_or_else(|| "-".to_string(), |path| path.display().to_string())
     );
     println!("scan: {}", selection.scan_path.display());
+    println!("evidence: {}", selection.evidence_path.display());
+    println!("inference: {}", selection.inference_path.display());
     println!("profile: {}", selection.canonical_profile_path.display());
     println!("status: {}", selection.status_path.display());
     println!(
@@ -310,10 +312,23 @@ fn print_discovery_selection(
     println!("summary: {}", selection.profile.summary);
 
     if let Some(payload) = payload {
+        println!(
+            "inference_summary: {}",
+            payload.inference_summary.as_deref().unwrap_or("-")
+        );
         println!("source_files: {}", payload.overview.source_file_count);
         println!("repositories: {}", payload.overview.repository_count);
         println!("api_contracts: {}", payload.overview.api_contract_count);
         println!("layer_rules: {}", payload.overview.layering_rules.len());
+        println!("inferences: {}", payload.overview.inference_count);
+        println!(
+            "average_inference_confidence: {}",
+            payload
+                .overview
+                .average_inference_confidence
+                .map(|value| format!("{value:.2}"))
+                .unwrap_or_else(|| "-".to_string())
+        );
     }
 }
 

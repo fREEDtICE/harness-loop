@@ -3,7 +3,7 @@ use std::{path::PathBuf, sync::Mutex};
 use chrono::Utc;
 use loopsmith_core::{
     discovery::WorkspaceDiscoveryPayload,
-    domain::{PromptOverrides, PromptSnapshot, RunState},
+    domain::{PlannerConversationResponse, PromptOverrides, PromptSnapshot, RunState},
     home,
     paths::normalize_path,
     storage::{LoopSmithStore, WorkspaceRecord},
@@ -11,7 +11,9 @@ use loopsmith_core::{
 use loopsmith_desktop_shell::{
     StageLogSseServer, validate_run_artifact_path, validate_stage_stdout_log_path,
 };
-use loopsmith_orchestration::{HarnessUiService, LaunchDraft, WorkspaceRunSummary};
+use loopsmith_orchestration::{
+    HarnessUiService, LaunchDraft, PlannerConversationDraft, WorkspaceRunSummary,
+};
 use rfd::FileDialog;
 use serde::Serialize;
 use tauri::{Manager, State};
@@ -243,6 +245,18 @@ fn inspect_run(
 #[tauri::command]
 async fn start_run(state: State<'_, AppState>, draft: LaunchDraft) -> Result<RunState, String> {
     state.service.start_run(draft).await.map_err(render_error)
+}
+
+#[tauri::command]
+async fn consult_planner(
+    state: State<'_, AppState>,
+    draft: PlannerConversationDraft,
+) -> Result<PlannerConversationResponse, String> {
+    state
+        .service
+        .consult_planner(draft)
+        .await
+        .map_err(render_error)
 }
 
 #[tauri::command]
@@ -534,6 +548,7 @@ fn main() {
             list_runs,
             inspect_run,
             start_run,
+            consult_planner,
             resume_run,
             read_global_config,
             write_global_config,

@@ -198,6 +198,7 @@ test("materialized runs replace the pending launch placeholder", () => {
         final_status: null,
         current_feature_index: 0,
         total_features: 1,
+        awaiting_feature_confirmation: false,
         active_stage: null,
       },
     ],
@@ -232,4 +233,40 @@ test("pending launch is not injected into a different workspace payload", () => 
   const merged = pendingLaunch.mergePendingLaunch(otherWorkspace, pending);
 
   assert.equal(merged.runs.length, 0);
+});
+
+test("awaiting feature confirmation runs render a confirm-and-build action", () => {
+  const { React, renderToStaticMarkup, WorkspaceTimeline } =
+    ensureCompiledModules();
+  const workspace = {
+    ...baseWorkspacePayload(),
+    runs: [
+      {
+        run_root: "/tmp/workspace/.loopsmith-runs/run-002",
+        run_title: "Planner review run",
+        created_at: "2026-04-04T00:00:00.000Z",
+        updated_at: "2026-04-04T00:01:00.000Z",
+        lifecycle: "running",
+        final_status: null,
+        current_feature_index: 0,
+        total_features: 2,
+        awaiting_feature_confirmation: true,
+        active_stage: null,
+      },
+    ],
+  };
+
+  const markup = renderToStaticMarkup(
+    React.createElement(WorkspaceTimeline, {
+      workspace,
+      isRunning: false,
+      onSelectRun() {},
+      onNewRun() {},
+      onProjectSettings() {},
+      onResumeRun() {},
+    }),
+  );
+
+  assert.match(markup, /Plan ready\. Confirm the feature slices before build starts\./);
+  assert.match(markup, /Confirm &amp; Build/);
 });

@@ -7,12 +7,14 @@ use loopsmith_core::{
     config::GeminiWorkerConfig,
     discovery::{DiscoveryArtifactSet, WorkspaceDiscoveryRequest},
     domain::{
-        BuilderHandoff, EvaluationRequest, PlanningRequest, QaReport, WorkerResult, WorkerStatus,
+        BuilderHandoff, EvaluationRequest, PlannerConversationRequest, PlanningRequest, QaReport,
+        WorkerResult, WorkerStatus,
     },
     shell_env::wrap_command_for_user_shell,
     worker::{
-        DiscoveryContext, DiscoveryWorkerResult, WorkerAdapter, WorkerContext,
-        render_discovery_prompt, render_worker_prompt,
+        DiscoveryContext, DiscoveryWorkerResult, PlannerConversationArtifactSet,
+        PlannerConversationContext, PlannerConversationWorkerResult, WorkerAdapter, WorkerContext,
+        render_discovery_prompt, render_planner_conversation_prompt, render_worker_prompt,
     },
 };
 use serde::Serialize;
@@ -422,6 +424,52 @@ impl WorkerAdapter for GeminiCliWorker {
             request,
         )
         .await
+    }
+
+    async fn consult_planner(
+        &self,
+        context: &PlannerConversationContext,
+        artifacts: &PlannerConversationArtifactSet,
+        request: &PlannerConversationRequest,
+    ) -> Result<PlannerConversationWorkerResult> {
+        let prompt = render_planner_conversation_prompt(context, request)?;
+        fs::write(&artifacts.prompt_file, &prompt)
+            .with_context(|| format!("failed to write {}", artifacts.prompt_file.display()))?;
+
+        let schema =
+            fs::read_to_string(&context.planner_conversation_schema).with_context(|| {
+                format!(
+                    "failed to read schema {}",
+                    context.planner_conversation_schema.display()
+                )
+            })?;
+        let prompt_with_schema = format!(
+            "{prompt}\n\nYou MUST respond with ONLY valid JSON matching this schema:\n{schema}\n"
+        );
+        let command = self.exec_command_for_workspace(&context.workspace);
+        let session_id = self
+            .execute_command(
+                &artifacts.prompt_file,
+                &artifacts.output_file,
+                &artifacts.stdout_log,
+                &artifacts.stderr_log,
+                command.clone(),
+                &prompt_with_schema,
+                "planner_consult",
+                1,
+            )
+            .await?;
+
+        Ok(PlannerConversationWorkerResult {
+            status: WorkerStatus::Executed,
+            command,
+            prompt_file: artifacts.prompt_file.clone(),
+            output_file: artifacts.output_file.clone(),
+            stdout_log: artifacts.stdout_log.clone(),
+            stderr_log: artifacts.stderr_log.clone(),
+            notes: vec!["Execution completed.".to_string()],
+            session_id,
+        })
     }
 
     async fn build(

@@ -35,6 +35,7 @@ evaluator = "prompts/evaluator.md"
 
 [schemas]
 workspace_profile = "schemas/workspace-profile.json"
+workspace_inference = "schemas/workspace-inference.json"
 planner_output = "schemas/planner-output.json"
 builder_handoff = "schemas/builder-handoff.json"
 qa_report = "schemas/qa-report.json"

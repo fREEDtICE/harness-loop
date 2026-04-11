@@ -2388,16 +2388,26 @@ fn seed_cached_workspace_profile(workspace_dir: &Path) -> Result<(), Box<dyn Err
     let profile = WorkspaceDiscoveryRequest {
         scan: scan.clone(),
         previous_profile: None,
+        previous_inference: None,
     }
     .synthesize_profile();
+    let inference = WorkspaceDiscoveryRequest {
+        scan: scan.clone(),
+        previous_profile: None,
+        previous_inference: None,
+    }
+    .synthesize_inference();
     let profile_fingerprint = profile_fingerprint(&profile)?;
 
     store.save_scan(&scan)?;
+    store.save_inference(&inference)?;
     store.save_profile(&profile)?;
     store.save_status(&WorkspaceDiscoveryStatus {
         workspace_path: workspace_dir.to_path_buf(),
         scan_path: store.scan_path(),
+        evidence_path: store.evidence_path(),
         profile_path: store.profile_path(),
+        inference_path: store.inference_path(),
         workspace_fingerprint: scan.workspace_fingerprint,
         profile_fingerprint: Some(profile_fingerprint),
         last_scanned_at: scan.scanned_at,
@@ -2405,6 +2415,7 @@ fn seed_cached_workspace_profile(workspace_dir: &Path) -> Result<(), Box<dyn Err
         last_refresh_error: None,
         used_fallback_profile: false,
         current_phase: WorkspaceDiscoveryPhase::Ready,
+        phase_heartbeat_at: Some(profile.generated_at),
     })?;
 
     Ok(())

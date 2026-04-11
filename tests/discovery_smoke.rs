@@ -48,6 +48,50 @@ fn simulated_cli_discovery_writes_workspace_profile_before_run_loop() -> Result<
 }
 
 #[test]
+fn cli_discover_uses_fallback_profile_when_live_refresh_produces_no_output()
+-> Result<(), Box<dyn Error>> {
+    let fixture = DiscoveryFixture::new()?;
+    let initial_output = fixture.discover()?;
+    fixture.assert_success(&initial_output)?;
+
+    let initial_profile = read_json(
+        &fixture
+            .workspace_dir
+            .join(".loopsmith/discovery/profile.json"),
+    )?;
+    fs::write(
+        fixture.workspace_dir.join("package.json"),
+        r#"{"name":"discovery-fixture","version":"0.2.0","scripts":{"test":"vitest","dev":"vite"},"dependencies":{"react":"18.3.0","zod":"3.23.8"}}"#,
+    )?;
+
+    let fake_codex =
+        fixture.write_fake_codex_binary("fake-codex-no-output", "#!/bin/sh\nexit 0\n")?;
+    let codex_config = fixture.write_codex_config("codex-missing-output.toml", &fake_codex)?;
+    let output = fixture.discover_with_config(&codex_config)?;
+    fixture.assert_success(&output)?;
+
+    let discovery_root = fixture.workspace_dir.join(".loopsmith/discovery");
+    let status = read_json(&discovery_root.join("status.json"))?;
+    let profile = read_json(&discovery_root.join("profile.json"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert_eq!(status["current_phase"], "using_fallback_profile");
+    assert_eq!(status["used_fallback_profile"], Value::Bool(true));
+    assert!(
+        status["last_refresh_error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("failed to read")
+    );
+    assert_eq!(profile["summary"], initial_profile["summary"]);
+    assert!(stdout.contains("phase: using_fallback_profile"));
+    assert!(stdout.contains("used_fallback_profile: true"));
+    assert!(!discovery_root.join("worker/result.json").exists());
+
+    Ok(())
+}
+
+#[test]
 fn simulated_cli_discover_command_refreshes_workspace_profile_without_creating_a_run()
 -> Result<(), Box<dyn Error>> {
     let fixture = DiscoveryFixture::new()?;
@@ -79,6 +123,36 @@ fn simulated_cli_discover_command_refreshes_workspace_profile_without_creating_a
     assert!(stdout.contains("summary:"));
     assert!(stdout.contains("source_files:"));
     assert!(!stdout.contains("run_root:"));
+
+    Ok(())
+}
+
+#[test]
+fn simulated_cli_discover_persists_evidence_and_inference_artifacts() -> Result<(), Box<dyn Error>>
+{
+    let fixture = DiscoveryFixture::new()?;
+    let output = fixture.discover()?;
+    fixture.assert_success(&output)?;
+
+    let discovery_root = fixture.workspace_dir.join(".loopsmith/discovery");
+    assert!(discovery_root.join("evidence.json").exists());
+    assert!(discovery_root.join("inference.json").exists());
+
+    let evidence = read_json(&discovery_root.join("evidence.json"))?;
+    let inference = read_json(&discovery_root.join("inference.json"))?;
+    let inference_items = inference["inferences"].as_array().expect("inference items");
+
+    assert!(evidence["source_files"].as_array().is_some());
+    assert!(!inference_items.is_empty());
+    for item in inference_items {
+        let confidence = item["confidence"].as_u64().expect("confidence");
+        assert!((1..=10).contains(&confidence));
+        if confidence == 10 {
+            let chains = item["evidence_chains"].as_array().expect("chains");
+            assert_eq!(chains.len(), 1);
+            assert_eq!(chains[0]["strength"], "strong");
+        }
+    }
 
     Ok(())
 }
@@ -231,15 +305,92 @@ commands = [
     }
 
     fn discover(&self) -> Result<Output, Box<dyn Error>> {
+        self.discover_with_config(&self.config_path)
+    }
+
+    fn discover_with_config(&self, config_path: &Path) -> Result<Output, Box<dyn Error>> {
         Ok(Command::new(env!("CARGO_BIN_EXE_loopsmith"))
             .current_dir(&self.project_root)
             .env("LOOPSMITH_HOME", &self.loopsmith_home)
             .arg("discover")
             .arg("--config")
-            .arg(&self.config_path)
+            .arg(config_path)
             .arg("--workspace")
             .arg(&self.workspace_dir)
             .output()?)
+    }
+
+    fn write_codex_config(
+        &self,
+        file_name: &str,
+        binary_path: &Path,
+    ) -> Result<PathBuf, Box<dyn Error>> {
+        let config_path = self.project_root.join("config").join(file_name);
+        fs::write(
+            &config_path,
+            format!(
+                r#"
+[project]
+root_dir = ".."
+
+[storage]
+runs_dir = ".loopsmith-runs"
+
+[workspace]
+isolation = "direct"
+
+[worker]
+kind = "codex_cli"
+
+[worker.codex]
+binary = "{binary}"
+model = "gpt-5.4"
+sandbox = "workspace-write"
+full_auto = false
+resume_sessions = false
+skip_git_repo_check = true
+
+[prompts]
+discovery = "prompts/discovery.md"
+planner = "prompts/planner.md"
+builder = "prompts/builder.md"
+evaluator = "prompts/evaluator.md"
+
+[schemas]
+workspace_profile = "schemas/workspace-profile.json"
+planner_output = "schemas/planner-output.json"
+builder_handoff = "schemas/builder-handoff.json"
+qa_report = "schemas/qa-report.json"
+
+[runtime]
+feature_limit = 1
+max_repair_attempts = 1
+continue_after_failure = false
+services = []
+stacks = []
+
+[evaluator]
+dimensions = ["correctness"]
+require_screenshots = false
+commands = [
+  ["/usr/bin/env", "true"]
+]
+"#,
+                binary = binary_path.display()
+            ),
+        )?;
+        Ok(config_path)
+    }
+
+    fn write_fake_codex_binary(
+        &self,
+        file_name: &str,
+        contents: &str,
+    ) -> Result<PathBuf, Box<dyn Error>> {
+        let binary_path = self.project_root.join(file_name);
+        fs::write(&binary_path, contents)?;
+        make_executable(&binary_path)?;
+        Ok(binary_path)
     }
 
     fn single_run_root(&self) -> Result<PathBuf, Box<dyn Error>> {
@@ -286,4 +437,19 @@ fn read_json(path: &Path) -> Result<Value, Box<dyn Error>> {
 
 fn snapshot_path_value(path: &Path) -> Value {
     Value::String(path.to_string_lossy().into_owned())
+}
+
+#[cfg(unix)]
+fn make_executable(path: &Path) -> Result<(), Box<dyn Error>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = fs::metadata(path)?.permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn make_executable(_path: &Path) -> Result<(), Box<dyn Error>> {
+    Ok(())
 }
