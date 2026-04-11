@@ -2393,21 +2393,25 @@ fn detect_user_journeys(
     e2e: &mut Vec<DiscoveryFact>,
 ) {
     let path_text = rel.to_string_lossy().to_ascii_lowercase();
+    let is_executable = is_executable_test_file(rel);
+
     if path_text.contains("journey") || text.to_ascii_lowercase().contains("journey") {
-        let test_names = extract_test_function_names(rel, text);
-        let summary = if !test_names.is_empty() {
-            format!("User journey tests: {}.", test_names.join(", "))
-        } else {
-            summarize_lines_matching(text, &["journey", "user journey"], 3)
-                .unwrap_or_else(|| summarize_lines(text, 3))
-        };
-        journeys.push(DiscoveryFact {
-            id: String::new(),
-            title: format!("User journey evidence in {}", rel.display()),
-            summary,
-            evidence: vec![rel.to_path_buf()],
-            tier: NegentropyTier::Verification,
-        });
+        if is_executable {
+            let test_names = extract_test_function_names(rel, text);
+            let summary = if !test_names.is_empty() {
+                format!("User journey tests: {}.", test_names.join(", "))
+            } else {
+                summarize_lines_matching(text, &["journey", "user journey"], 3)
+                    .unwrap_or_else(|| summarize_lines(text, 3))
+            };
+            journeys.push(DiscoveryFact {
+                id: String::new(),
+                title: format!("User journey evidence in {}", rel.display()),
+                summary,
+                evidence: vec![rel.to_path_buf()],
+                tier: NegentropyTier::Verification,
+            });
+        }
     }
 
     if path_text.contains("e2e")
@@ -2417,20 +2421,35 @@ fn detect_user_journeys(
         || path_text.contains("run_smoke")
         || text.contains("CODEX_LIVE_E2E")
     {
-        let test_names = extract_test_function_names(rel, text);
-        let summary = if !test_names.is_empty() {
-            format!("E2E test cases: {}.", test_names.join(", "))
-        } else {
-            summarize_lines(text, 3)
-        };
-        e2e.push(DiscoveryFact {
-            id: String::new(),
-            title: format!("E2E evidence in {}", rel.display()),
-            summary,
-            evidence: vec![rel.to_path_buf()],
-            tier: NegentropyTier::Verification,
-        });
+        if is_executable {
+            let test_names = extract_test_function_names(rel, text);
+            let summary = if !test_names.is_empty() {
+                format!("E2E test cases: {}.", test_names.join(", "))
+            } else {
+                summarize_lines(text, 3)
+            };
+            e2e.push(DiscoveryFact {
+                id: String::new(),
+                title: format!("E2E evidence in {}", rel.display()),
+                summary,
+                evidence: vec![rel.to_path_buf()],
+                tier: NegentropyTier::Verification,
+            });
+        }
     }
+}
+
+fn is_executable_test_file(path: &Path) -> bool {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    matches!(
+        ext.as_str(),
+        "rs" | "ts" | "tsx" | "js" | "jsx" | "mjs" | "mts" | "cjs" | "sh" | "py" | "rb"
+            | "go" | "java" | "kt" | "swift" | "c" | "cpp" | "cs"
+    )
 }
 
 fn extract_test_function_names(rel: &Path, text: &str) -> Vec<String> {
@@ -4308,6 +4327,45 @@ mod tests {
             "anyhow should appear at most once in consolidated summary, but appeared {} times in: {}",
             anyhow_count,
             summary
+        );
+    }
+
+    #[test]
+    fn e2e_test_cases_exclude_non_executable_files() {
+        let temp = tempdir().expect("tempdir");
+        let cargo = "[package]\nname = \"test-crate\"\nversion = \"0.1.0\"\n";
+        fs::write(temp.path().join("Cargo.toml"), cargo).expect("write cargo");
+        fs::create_dir_all(temp.path().join("src")).expect("src dir");
+        fs::write(temp.path().join("src/lib.rs"), "pub fn main() {}\n").expect("write lib");
+        fs::write(
+            temp.path().join("README.md"),
+            "# My Project\nSet CODEX_LIVE_E2E=1 to run live tests.\n",
+        )
+        .expect("write readme");
+        fs::create_dir_all(temp.path().join("tests")).expect("tests dir");
+        fs::write(
+            temp.path().join("tests/run_smoke.rs"),
+            "#[test]\nfn smoke_test() { assert!(true); }\n",
+        )
+        .expect("write smoke test");
+
+        let scan = scan_workspace(temp.path()).expect("scan");
+        let md_e2e = scan
+            .e2e_test_cases
+            .iter()
+            .find(|f| f.evidence.iter().any(|p| p.to_string_lossy().contains(".md")));
+        assert!(
+            md_e2e.is_none(),
+            "documentation files (.md) should not appear in e2e_test_cases, but found: {:?}",
+            md_e2e.map(|f| &f.title)
+        );
+        let rs_e2e = scan
+            .e2e_test_cases
+            .iter()
+            .find(|f| f.evidence.iter().any(|p| p.to_string_lossy().contains("run_smoke.rs")));
+        assert!(
+            rs_e2e.is_some(),
+            "executable test files (.rs) should still appear in e2e_test_cases"
         );
     }
 }
