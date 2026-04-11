@@ -2,6 +2,7 @@ pub mod artifacts;
 pub mod config;
 pub mod controller;
 pub mod discovery;
+pub mod discovery_quality;
 pub mod domain;
 pub mod env_probe;
 pub mod evaluator;

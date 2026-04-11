@@ -4,6 +4,10 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use loopsmith_core::{
     discovery::{WorkspaceDiscoveryPayload, WorkspaceDiscoveryPhase, WorkspaceProfileSelection},
+    discovery_quality::{
+        DiscoveryQualityGate, discovery_quality_report_path, evaluate_discovery_store,
+        print_discovery_quality_report, save_discovery_quality_report,
+    },
     domain::RunState,
     home, logging,
     paths::normalize_path,
@@ -53,6 +57,10 @@ enum Command {
     Discover {
         #[arg(long)]
         config: Option<PathBuf>,
+        #[arg(long)]
+        workspace: PathBuf,
+    },
+    DiscoverEval {
         #[arg(long)]
         workspace: PathBuf,
     },
@@ -110,7 +118,8 @@ fn ensure_ready_for_cli(command: &Command) -> Result<()> {
         }
         | Command::Inspect {
             config: Some(_), ..
-        } => {}
+        }
+        | Command::DiscoverEval { .. } => {}
         _ => {
             if !setup::has_default_config()? {
                 setup::run_interactive_setup()?;
@@ -178,6 +187,17 @@ async fn run_command(command: Command) -> Result<()> {
             let payload = service.load_discovery_payload(&workspace)?;
 
             print_discovery_selection(&selection, payload.as_ref());
+        }
+        Command::DiscoverEval { workspace } => {
+            let workspace = absolutize(&workspace)?;
+            let store = loopsmith_core::discovery::WorkspaceDiscoveryStore::new(&workspace);
+            let report = evaluate_discovery_store(&store)?;
+            let report_path = discovery_quality_report_path(&store);
+            save_discovery_quality_report(&store, &report)?;
+            println!("{}", print_discovery_quality_report(&report_path, &report));
+            if report.gate == DiscoveryQualityGate::Fail {
+                process::exit(2);
+            }
         }
     }
 

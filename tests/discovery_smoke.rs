@@ -157,6 +157,35 @@ fn simulated_cli_discover_persists_evidence_and_inference_artifacts() -> Result<
     Ok(())
 }
 
+#[test]
+fn simulated_cli_discover_eval_writes_quality_report() -> Result<(), Box<dyn Error>> {
+    let fixture = DiscoveryFixture::new()?;
+    let discover_output = fixture.discover()?;
+    fixture.assert_success(&discover_output)?;
+
+    let output = fixture.discover_eval()?;
+    fixture.assert_success(&output)?;
+
+    let discovery_root = fixture.workspace_dir.join(".loopsmith/discovery");
+    let report = read_json(&discovery_root.join("quality-report.json"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(discovery_root.join("quality-report.json").exists());
+    assert_eq!(report["rubric_version"], "2026-04-11.negentropy-v1");
+    assert_ne!(report["gate"], "fail");
+    assert_eq!(report["metrics"]["stale_artifacts"], Value::Bool(false));
+    assert_eq!(
+        report["metrics"]["unsupported_profile_claim_count"],
+        Value::from(0_u64)
+    );
+    assert!(report["dimensions"].as_array().is_some());
+    assert!(stdout.contains("quality_report:"));
+    assert!(stdout.contains("gate:"));
+    assert!(stdout.contains("overall_score:"));
+
+    Ok(())
+}
+
 struct DiscoveryFixture {
     _temp: TempDir,
     project_root: PathBuf,
@@ -306,6 +335,16 @@ commands = [
 
     fn discover(&self) -> Result<Output, Box<dyn Error>> {
         self.discover_with_config(&self.config_path)
+    }
+
+    fn discover_eval(&self) -> Result<Output, Box<dyn Error>> {
+        Ok(Command::new(env!("CARGO_BIN_EXE_loopsmith"))
+            .current_dir(&self.project_root)
+            .env("LOOPSMITH_HOME", &self.loopsmith_home)
+            .arg("discover-eval")
+            .arg("--workspace")
+            .arg(&self.workspace_dir)
+            .output()?)
     }
 
     fn discover_with_config(&self, config_path: &Path) -> Result<Output, Box<dyn Error>> {

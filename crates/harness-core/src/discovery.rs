@@ -1233,9 +1233,14 @@ fn synthesize_profile_from_evidence(scan: &WorkspaceDiscoveryEvidence) -> Worksp
         .filter(|f| f.tier == NegentropyTier::Specification)
         .take(3)
     {
-        key_concepts.push(format!("Convention: {} (from {}).",
+        key_concepts.push(format!(
+            "Convention: {} (from {}).",
             convention.title,
-            convention.evidence.first().map(|p| p.display().to_string()).unwrap_or_default(),
+            convention
+                .evidence
+                .first()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
         ));
     }
 
@@ -1303,13 +1308,15 @@ fn synthesize_profile_from_evidence(scan: &WorkspaceDiscoveryEvidence) -> Worksp
 fn consolidate_facts(facts: &[DiscoveryFact]) -> Vec<DiscoveryFact> {
     let mut by_title: BTreeMap<String, DiscoveryFact> = BTreeMap::new();
     for fact in facts {
-        let entry = by_title.entry(fact.title.clone()).or_insert_with(|| DiscoveryFact {
-            id: fact.id.clone(),
-            title: fact.title.clone(),
-            summary: String::new(),
-            evidence: Vec::new(),
-            tier: fact.tier,
-        });
+        let entry = by_title
+            .entry(fact.title.clone())
+            .or_insert_with(|| DiscoveryFact {
+                id: fact.id.clone(),
+                title: fact.title.clone(),
+                summary: String::new(),
+                evidence: Vec::new(),
+                tier: fact.tier,
+            });
         if entry.tier > fact.tier {
             entry.tier = fact.tier;
         }
@@ -1685,9 +1692,7 @@ impl WorkspaceProfile {
                 .map(|p| p.display().to_string())
                 .collect::<Vec<_>>()
                 .join(", ");
-            notes.push(format!(
-                "Do not modify frozen/generated files: {paths}."
-            ));
+            notes.push(format!("Do not modify frozen/generated files: {paths}."));
         }
 
         if !self.change_boundaries.high_risk_paths.is_empty() {
@@ -2251,16 +2256,16 @@ fn extend_layer_candidates(layers: &mut BTreeMap<String, BTreeSet<PathBuf>>, rel
         .map(|s| s.to_ascii_lowercase())
         .collect();
 
-    let layer = components.iter().find_map(|component| {
-        match component.as_str() {
+    let layer = components
+        .iter()
+        .find_map(|component| match component.as_str() {
             "ui" | "web" | "frontend" => Some("ui"),
             "service" | "application" => Some("service"),
             "domain" | "core" => Some("core"),
             "worker" | "adapter" | "cli" => Some("adapter"),
             "infra" | "infrastructure" => Some("infra"),
             _ => None,
-        }
-    });
+        });
 
     if let Some(layer) = layer {
         layers
@@ -2308,10 +2313,7 @@ fn detect_user_journeys(
     if path_text.contains("journey") || text.to_ascii_lowercase().contains("journey") {
         let test_names = extract_test_function_names(rel, text);
         let summary = if !test_names.is_empty() {
-            format!(
-                "User journey tests: {}.",
-                test_names.join(", ")
-            )
+            format!("User journey tests: {}.", test_names.join(", "))
         } else {
             summarize_lines_matching(text, &["journey", "user journey"], 3)
                 .unwrap_or_else(|| summarize_lines(text, 3))
@@ -2334,10 +2336,7 @@ fn detect_user_journeys(
     {
         let test_names = extract_test_function_names(rel, text);
         let summary = if !test_names.is_empty() {
-            format!(
-                "E2E test cases: {}.",
-                test_names.join(", ")
-            )
+            format!("E2E test cases: {}.", test_names.join(", "))
         } else {
             summarize_lines(text, 3)
         };
@@ -2792,7 +2791,11 @@ fn detect_project_intent(rel: &Path, text: &str, output: &mut Vec<DiscoveryFact>
     if lower == "package.json" {
         if let Some(desc_start) = text.find("\"description\"") {
             let rest = &text[desc_start + "\"description\"".len()..];
-            let rest = rest.trim_start().strip_prefix(':').unwrap_or(rest).trim_start();
+            let rest = rest
+                .trim_start()
+                .strip_prefix(':')
+                .unwrap_or(rest)
+                .trim_start();
             if let Some(val) = rest.strip_prefix('"') {
                 if let Some(end) = val.find('"') {
                     let desc = &val[..end];
@@ -2876,12 +2879,20 @@ fn detect_environment_requirements(rel: &Path, text: &str, output: &mut Vec<Disc
         }
     }
 
-    if lower == "docker-compose.yml" || lower == "docker-compose.yaml" || lower == "compose.yml" || lower == "compose.yaml" {
+    if lower == "docker-compose.yml"
+        || lower == "docker-compose.yaml"
+        || lower == "compose.yml"
+        || lower == "compose.yaml"
+    {
         let services: Vec<&str> = text
             .lines()
             .filter_map(|l| {
                 let t = l.trim_start();
-                if t.ends_with(':') && !l.starts_with(' ') == false && l.starts_with("  ") && !l.starts_with("    ") {
+                if t.ends_with(':')
+                    && !l.starts_with(' ') == false
+                    && l.starts_with("  ")
+                    && !l.starts_with("    ")
+                {
                     Some(t.trim_end_matches(':'))
                 } else {
                     None
@@ -2904,11 +2915,7 @@ fn detect_environment_requirements(rel: &Path, text: &str, output: &mut Vec<Disc
     }
 }
 
-fn detect_change_boundaries(
-    rel: &Path,
-    frozen: &mut Vec<PathBuf>,
-    high_risk: &mut Vec<PathBuf>,
-) {
+fn detect_change_boundaries(rel: &Path, frozen: &mut Vec<PathBuf>, high_risk: &mut Vec<PathBuf>) {
     let Some(name) = rel.file_name().and_then(|n| n.to_str()) else {
         return;
     };
@@ -3787,28 +3794,19 @@ mod tests {
     #[test]
     fn layer_candidates_match_exact_path_segments_not_substrings() {
         let mut layers = std::collections::BTreeMap::new();
-        super::extend_layer_candidates(
-            &mut layers,
-            std::path::Path::new("build/circuits.rs"),
-        );
+        super::extend_layer_candidates(&mut layers, std::path::Path::new("build/circuits.rs"));
         assert!(
             !layers.contains_key("ui"),
             "circuits.rs contains 'ui' as a substring but should not match the 'ui' layer"
         );
 
-        super::extend_layer_candidates(
-            &mut layers,
-            std::path::Path::new("src/gui_utils.rs"),
-        );
+        super::extend_layer_candidates(&mut layers, std::path::Path::new("src/gui_utils.rs"));
         assert!(
             !layers.contains_key("ui"),
             "gui_utils contains 'ui' as a substring but should not match the 'ui' layer"
         );
 
-        super::extend_layer_candidates(
-            &mut layers,
-            std::path::Path::new("ui/components/App.tsx"),
-        );
+        super::extend_layer_candidates(&mut layers, std::path::Path::new("ui/components/App.tsx"));
         assert!(
             layers.contains_key("ui"),
             "ui/ directory should match the 'ui' layer"
@@ -3970,8 +3968,12 @@ mod tests {
 
         let profile = synthesize_profile_from_evidence(&scan);
         let context = profile.prompt_context();
-        let spec_pos = context.find("specifications").expect("should contain specifications section");
-        let contract_pos = context.find("explicit_api_contracts").expect("should contain api contracts section");
+        let spec_pos = context
+            .find("specifications")
+            .expect("should contain specifications section");
+        let contract_pos = context
+            .find("explicit_api_contracts")
+            .expect("should contain api contracts section");
         let auth_pos = context.find("auth");
         assert!(
             spec_pos < contract_pos,
@@ -4024,7 +4026,10 @@ mod tests {
             "should detect project intent from Cargo.toml description"
         );
         assert!(
-            intent.unwrap().summary.contains("workspace orchestration tool"),
+            intent
+                .unwrap()
+                .summary
+                .contains("workspace orchestration tool"),
             "should extract the description text"
         );
     }
@@ -4051,7 +4056,8 @@ mod tests {
     #[test]
     fn detect_environment_requirements_extracts_rust_toolchain() {
         let temp = tempdir().expect("tempdir");
-        let toolchain = "[toolchain]\nchannel = \"1.78.0\"\ncomponents = [\"rustfmt\", \"clippy\"]\n";
+        let toolchain =
+            "[toolchain]\nchannel = \"1.78.0\"\ncomponents = [\"rustfmt\", \"clippy\"]\n";
         fs::write(temp.path().join("rust-toolchain.toml"), toolchain).expect("write toolchain");
         let cargo = "[package]\nname = \"test-crate\"\nversion = \"0.1.0\"\n";
         fs::write(temp.path().join("Cargo.toml"), cargo).expect("write cargo");
