@@ -8,7 +8,5 @@ rust-version.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 loopsmith-core = { path = "../harness-core" }
-loopsmith-worker-claude = { path = "../harness-worker-claude" }
-loopsmith-worker-codex = { path = "../harness-worker-codex" }
-loopsmith-worker-gemini = { path = "../harness-worker-gemini" }
+loopsmith-acp = { path = "../loopsmith-acp" }
 loopsmith-worker-simulated = { path = "../harness-worker-simulated" }

@@ -43,14 +43,11 @@ runs_dir = "{}"
 isolation = "direct"
 
 [worker]
-kind = "codex_cli"
+kind = "acp"
 
-[worker.codex]
-binary = "codex"
-model = "gpt-5.4"
-sandbox = "workspace-write"
-full_auto = true
-skip_git_repo_check = true
+[worker.acp]
+command = ["codex"]
+agent_name = "codex"
 resume_sessions = true
 
 [prompts]
@@ -164,14 +161,11 @@ evaluator_statuses = ["pass"]
 session_prefix = "simulated"
 
 [worker.planner]
-kind = "codex_cli"
+kind = "acp"
 
-[worker.planner.codex]
-binary = "codex"
-model = "gpt-5.4"
-sandbox = "workspace-write"
-full_auto = true
-skip_git_repo_check = true
+[worker.planner.acp]
+command = ["codex"]
+agent_name = "codex"
 resume_sessions = true
 
 [prompts]

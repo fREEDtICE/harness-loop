@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { PromptEditorModal } from "./ui-components";
 import { useTranslation } from "react-i18next";
 import { parse, stringify } from "smol-toml";
@@ -7,7 +7,7 @@ import { changeLocale } from "./i18n";
 import { readError } from "./utils";
 import SetupWizard from "./SetupWizard";
 
-type WorkerKind = "codex_cli" | "claude_cli" | "gemini_cli" | "simulated";
+type WorkerKind = "acp" | "simulated";
 type IsolationMode = "direct" | "git_worktree";
 
 interface ConfigFormState {
@@ -16,24 +16,9 @@ interface ConfigFormState {
   workspace: { isolation: IsolationMode };
   worker: {
     kind: WorkerKind;
-    codex?: {
-      binary: string;
-      model: string;
-      sandbox: string;
-      full_auto: boolean;
-      skip_git_repo_check: boolean;
-      resume_sessions: boolean;
-    };
-    claude?: {
-      binary: string;
-      model: string;
-      dangerously_skip_permissions: boolean;
-      resume_sessions: boolean;
-    };
-    gemini?: {
-      binary: string;
-      model: string;
-      sandbox: string;
+    acp?: {
+      command: string[];
+      agent_name: string;
       resume_sessions: boolean;
     };
     simulation?: {
@@ -55,36 +40,9 @@ interface ConfigFormState {
   };
 }
 
-const CODEX_MODELS = [
-  { value: "gpt-5.4", label: "gpt-5.4" },
-  { value: "gpt-5.4-mini", label: "gpt-5.4-mini — Smaller frontier agentic coding model" },
-  { value: "gpt-5.3-codex", label: "gpt-5.3-codex — Frontier Codex-optimized agentic coding model" },
-  { value: "gpt-5.2-codex", label: "gpt-5.2-codex — Frontier agentic coding model" },
-  { value: "gpt-5.2", label: "gpt-5.2 — Optimized for professional work and long-running agents" },
-  { value: "gpt-5.1-codex-max", label: "gpt-5.1-codex-max — Codex-optimized model for deep and fast reasoning" },
-  { value: "gpt-5.1-codex-mini", label: "gpt-5.1-codex-mini" },
-];
-
-const DEFAULT_CODEX = {
-  binary: "codex",
-  model: "gpt-5.4",
-  sandbox: "workspace-write",
-  full_auto: true,
-  skip_git_repo_check: true,
-  resume_sessions: true,
-};
-
-const DEFAULT_CLAUDE = {
-  binary: "claude",
-  model: "sonnet",
-  dangerously_skip_permissions: true,
-  resume_sessions: true,
-};
-
-const DEFAULT_GEMINI = {
-  binary: "gemini",
-  model: "gemini-2.5-pro",
-  sandbox: "workspace-write",
+const DEFAULT_ACP = {
+  command: ["codex"],
+  agent_name: "acp-agent",
   resume_sessions: true,
 };
 
@@ -112,20 +70,10 @@ function tomlToForm(raw: string): ConfigFormState {
     workspace: { isolation: (workspace.isolation ?? "direct") as IsolationMode },
     worker: {
       kind,
-      codex: worker.codex
-        ? { ...DEFAULT_CODEX, ...(worker.codex as object) }
-        : kind === "codex_cli"
-          ? { ...DEFAULT_CODEX }
-          : undefined,
-      claude: worker.claude
-        ? { ...DEFAULT_CLAUDE, ...(worker.claude as object) }
-        : kind === "claude_cli"
-          ? { ...DEFAULT_CLAUDE }
-          : undefined,
-      gemini: worker.gemini
-        ? { ...DEFAULT_GEMINI, ...(worker.gemini as object) }
-        : kind === "gemini_cli"
-          ? { ...DEFAULT_GEMINI }
+      acp: worker.acp
+        ? { ...DEFAULT_ACP, ...(worker.acp as object) }
+        : kind === "acp"
+          ? { ...DEFAULT_ACP }
           : undefined,
       simulation: worker.simulation
         ? { ...DEFAULT_SIMULATION, ...(worker.simulation as object) }
@@ -208,12 +156,8 @@ function formToToml(form: ConfigFormState, originalRaw: string): string {
 
 function workerConfigForKind(form: ConfigFormState) {
   switch (form.worker.kind) {
-    case "codex_cli":
-      return form.worker.codex ?? DEFAULT_CODEX;
-    case "claude_cli":
-      return form.worker.claude ?? DEFAULT_CLAUDE;
-    case "gemini_cli":
-      return form.worker.gemini ?? DEFAULT_GEMINI;
+    case "acp":
+      return form.worker.acp ?? DEFAULT_ACP;
     case "simulated":
       return form.worker.simulation ?? DEFAULT_SIMULATION;
   }
@@ -221,12 +165,8 @@ function workerConfigForKind(form: ConfigFormState) {
 
 function workerSectionKey(kind: WorkerKind): string {
   switch (kind) {
-    case "codex_cli":
-      return "codex";
-    case "claude_cli":
-      return "claude";
-    case "gemini_cli":
-      return "gemini";
+    case "acp":
+      return "acp";
     case "simulated":
       return "simulation";
   }
@@ -253,62 +193,6 @@ function FormRow({ children }: { children: React.ReactNode }) {
   return <div className="cfg-row">{children}</div>;
 }
 
-function CodexModelField({
-  model,
-  onModelChange,
-}: {
-  model: string;
-  onModelChange: (m: string) => void;
-}) {
-  const { t } = useTranslation();
-  const isKnown = CODEX_MODELS.some((m2) => m2.value === model);
-  const [customMode, setCustomMode] = useState(!isKnown && model !== "");
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  if (customMode) {
-    return (
-      <div className="cfg-model-custom">
-        <input
-          ref={inputRef}
-          value={model}
-          onChange={(e) => onModelChange(e.target.value)}
-          placeholder={t('settings.customModel')}
-        />
-        <button
-          className="cfg-model-back"
-          onClick={() => {
-            setCustomMode(false);
-            onModelChange(CODEX_MODELS[0].value);
-          }}
-          title={t('actions.backToModelList')}
-        >
-          ×
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <select
-      value={isKnown ? model : "__custom__"}
-      onChange={(e) => {
-        if (e.target.value === "__custom__") {
-          setCustomMode(true);
-          onModelChange("");
-          setTimeout(() => inputRef.current?.focus(), 0);
-        } else {
-          onModelChange(e.target.value);
-        }
-      }}
-    >
-      {CODEX_MODELS.map((m) => (
-        <option key={m.value} value={m.value}>{m.label}</option>
-      ))}
-      <option value="__custom__">{t('settings.customEllipsis')}</option>
-    </select>
-  );
-}
-
 function WorkerSection({
   form,
   onChange,
@@ -321,39 +205,17 @@ function WorkerSection({
 
   function setKind(newKind: WorkerKind) {
     const next = { ...form.worker, kind: newKind };
-    if (newKind === "codex_cli" && !next.codex) next.codex = { ...DEFAULT_CODEX };
-    if (newKind === "claude_cli" && !next.claude) next.claude = { ...DEFAULT_CLAUDE };
-    if (newKind === "gemini_cli" && !next.gemini) next.gemini = { ...DEFAULT_GEMINI };
+    if (newKind === "acp" && !next.acp) next.acp = { ...DEFAULT_ACP };
     if (newKind === "simulated" && !next.simulation) next.simulation = { ...DEFAULT_SIMULATION };
     onChange({ ...form, worker: next });
   }
 
-  function updateCodex(patch: Partial<NonNullable<ConfigFormState["worker"]["codex"]>>) {
+  function updateAcp(patch: Partial<NonNullable<ConfigFormState["worker"]["acp"]>>) {
     onChange({
       ...form,
       worker: {
         ...form.worker,
-        codex: { ...(form.worker.codex ?? DEFAULT_CODEX), ...patch },
-      },
-    });
-  }
-
-  function updateClaude(patch: Partial<NonNullable<ConfigFormState["worker"]["claude"]>>) {
-    onChange({
-      ...form,
-      worker: {
-        ...form.worker,
-        claude: { ...(form.worker.claude ?? DEFAULT_CLAUDE), ...patch },
-      },
-    });
-  }
-
-  function updateGemini(patch: Partial<NonNullable<ConfigFormState["worker"]["gemini"]>>) {
-    onChange({
-      ...form,
-      worker: {
-        ...form.worker,
-        gemini: { ...(form.worker.gemini ?? DEFAULT_GEMINI), ...patch },
+        acp: { ...(form.worker.acp ?? DEFAULT_ACP), ...patch },
       },
     });
   }
@@ -377,89 +239,32 @@ function WorkerSection({
             value={kind}
             onChange={(e) => setKind(e.target.value as WorkerKind)}
           >
-            <option value="codex_cli">{t('settings.codexCli')}</option>
-            <option value="claude_cli">{t('settings.claudeCli')}</option>
-            <option value="gemini_cli">{t('settings.geminiCli')}</option>
+            <option value="acp">{t('settings.acp')}</option>
             <option value="simulated">{t('settings.simulated')}</option>
           </select>
         </FormField>
       </FormRow>
 
-      {kind === "codex_cli" && form.worker.codex && (
+      {kind === "acp" && form.worker.acp && (
         <>
           <FormRow>
-            <FormField label={t('settings.binary')} testid="cfg-codex-binary">
-              <input value={form.worker.codex.binary} onChange={(e) => updateCodex({ binary: e.target.value })} />
-            </FormField>
-            <FormField label={t('settings.model')} testid="cfg-codex-model">
-              <CodexModelField
-                model={form.worker.codex.model}
-                onModelChange={(m) => updateCodex({ model: m })}
+            <FormField label={t('settings.command')} testid="cfg-acp-command">
+              <input
+                value={form.worker.acp.command.join(", ")}
+                onChange={(e) =>
+                  updateAcp({
+                    command: e.target.value.split(",").map((s) => s.trim()).filter(Boolean),
+                  })
+                }
               />
             </FormField>
-            <FormField label={t('settings.sandbox')} testid="cfg-codex-sandbox">
-              <select value={form.worker.codex.sandbox} onChange={(e) => updateCodex({ sandbox: e.target.value })}>
-                <option value="read-only">read-only</option>
-                <option value="workspace-write">workspace-write</option>
-                <option value="danger-full-access">danger-full-access</option>
-              </select>
+            <FormField label={t('settings.agentName')} testid="cfg-acp-agent-name">
+              <input value={form.worker.acp.agent_name} onChange={(e) => updateAcp({ agent_name: e.target.value })} />
             </FormField>
           </FormRow>
           <FormRow>
-            <FormField label={t('settings.fullAuto')} testid="cfg-codex-full-auto">
-              <input type="checkbox" checked={form.worker.codex.full_auto} onChange={(e) => updateCodex({ full_auto: e.target.checked })} />
-            </FormField>
-            <FormField label={t('settings.skipGitCheck')} testid="cfg-codex-skip-git">
-              <input type="checkbox" checked={form.worker.codex.skip_git_repo_check} onChange={(e) => updateCodex({ skip_git_repo_check: e.target.checked })} />
-            </FormField>
-            <FormField label={t('settings.resumeSessions')} testid="cfg-codex-resume">
-              <input type="checkbox" checked={form.worker.codex.resume_sessions} onChange={(e) => updateCodex({ resume_sessions: e.target.checked })} />
-            </FormField>
-          </FormRow>
-        </>
-      )}
-
-      {kind === "claude_cli" && form.worker.claude && (
-        <>
-          <FormRow>
-            <FormField label={t('settings.binary')} testid="cfg-claude-binary">
-              <input value={form.worker.claude.binary} onChange={(e) => updateClaude({ binary: e.target.value })} />
-            </FormField>
-            <FormField label={t('settings.model')} testid="cfg-claude-model">
-              <input value={form.worker.claude.model} onChange={(e) => updateClaude({ model: e.target.value })} />
-            </FormField>
-          </FormRow>
-          <FormRow>
-            <FormField label={t('settings.skipPermissions')} testid="cfg-claude-skip-perms">
-              <input type="checkbox" checked={form.worker.claude.dangerously_skip_permissions} onChange={(e) => updateClaude({ dangerously_skip_permissions: e.target.checked })} />
-            </FormField>
-            <FormField label={t('settings.resumeSessions')} testid="cfg-claude-resume">
-              <input type="checkbox" checked={form.worker.claude.resume_sessions} onChange={(e) => updateClaude({ resume_sessions: e.target.checked })} />
-            </FormField>
-          </FormRow>
-        </>
-      )}
-
-      {kind === "gemini_cli" && form.worker.gemini && (
-        <>
-          <FormRow>
-            <FormField label={t('settings.binary')} testid="cfg-gemini-binary">
-              <input value={form.worker.gemini.binary} onChange={(e) => updateGemini({ binary: e.target.value })} />
-            </FormField>
-            <FormField label={t('settings.model')} testid="cfg-gemini-model">
-              <input value={form.worker.gemini.model} onChange={(e) => updateGemini({ model: e.target.value })} />
-            </FormField>
-            <FormField label={t('settings.sandbox')} testid="cfg-gemini-sandbox">
-              <select value={form.worker.gemini.sandbox} onChange={(e) => updateGemini({ sandbox: e.target.value })}>
-                <option value="read-only">read-only</option>
-                <option value="workspace-write">workspace-write</option>
-                <option value="danger-full-access">danger-full-access</option>
-              </select>
-            </FormField>
-          </FormRow>
-          <FormRow>
-            <FormField label={t('settings.resumeSessions')} testid="cfg-gemini-resume">
-              <input type="checkbox" checked={form.worker.gemini.resume_sessions} onChange={(e) => updateGemini({ resume_sessions: e.target.checked })} />
+            <FormField label={t('settings.resumeSessions')} testid="cfg-acp-resume">
+              <input type="checkbox" checked={form.worker.acp.resume_sessions} onChange={(e) => updateAcp({ resume_sessions: e.target.checked })} />
             </FormField>
           </FormRow>
         </>

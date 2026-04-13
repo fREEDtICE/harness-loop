@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
+use dialoguer::{Confirm, Select, theme::ColorfulTheme};
 use tracing::info;
 
 use crate::{
@@ -20,43 +20,31 @@ pub struct SetupResult {
     pub model: String,
 }
 
-struct CliOption {
+struct AcpAgentOption {
     label: &'static str,
     kind_tag: &'static str,
-    binary: &'static str,
-    recommended_models: &'static [&'static str],
+    command: &'static [&'static str],
+    default_agent_name: &'static str,
 }
 
-const CLI_OPTIONS: &[CliOption] = &[
-    CliOption {
-        label: "Codex CLI",
-        kind_tag: "codex_cli",
-        binary: "codex",
-        recommended_models: &[
-            "gpt-5.4",
-            "gpt-5.4-mini",
-            "gpt-5.3-codex",
-            "gpt-5.2-codex",
-            "gpt-5.2",
-            "gpt-5.1-codex-max",
-            "gpt-5.1-codex-mini",
-        ],
+const ACP_AGENT_OPTIONS: &[AcpAgentOption] = &[
+    AcpAgentOption {
+        label: "Codex CLI (via ACP)",
+        kind_tag: "acp",
+        command: &["codex"],
+        default_agent_name: "codex",
     },
-    CliOption {
-        label: "Claude Code",
-        kind_tag: "claude_cli",
-        binary: "claude",
-        recommended_models: &[
-            "claude-sonnet-4-20250514",
-            "claude-opus-4-20250514",
-            "claude-sonnet-4.5-20250514",
-        ],
+    AcpAgentOption {
+        label: "Claude Code (via ACP)",
+        kind_tag: "acp",
+        command: &["claude"],
+        default_agent_name: "claude",
     },
-    CliOption {
-        label: "Gemini CLI",
-        kind_tag: "gemini_cli",
-        binary: "gemini",
-        recommended_models: &["gemini-2.5-pro", "gemini-2.5-flash"],
+    AcpAgentOption {
+        label: "Gemini CLI (via ACP)",
+        kind_tag: "acp",
+        command: &["gemini"],
+        default_agent_name: "gemini",
     },
 ];
 
@@ -75,7 +63,7 @@ pub fn run_interactive_setup() -> Result<SetupResult> {
 
     let theme = ColorfulTheme::default();
 
-    let cli_labels: Vec<String> = CLI_OPTIONS
+    let cli_labels: Vec<String> = ACP_AGENT_OPTIONS
         .iter()
         .map(|opt| format_cli_label(opt, &report))
         .collect();
@@ -89,15 +77,16 @@ pub fn run_interactive_setup() -> Result<SetupResult> {
         .interact()
         .context("failed to read CLI selection")?;
 
-    let selected_cli = &CLI_OPTIONS[cli_index];
-    let probe = report.find_tool(selected_cli.kind_tag);
+    let selected = &ACP_AGENT_OPTIONS[cli_index];
+    let binary_name = selected.command[0];
+    let probe = report.find_tool(binary_name);
 
     if let Some(probe) = probe {
         if !probe.is_found() {
             println!();
             println!(
                 "  ⚠  {} ({}) was not found on your machine.",
-                selected_cli.label, selected_cli.binary
+                selected.label, binary_name
             );
             println!("     You can still proceed, but runs will fail until it is installed.");
 
@@ -122,15 +111,13 @@ pub fn run_interactive_setup() -> Result<SetupResult> {
 
     let resolved_binary = probe
         .and_then(|p| p.resolved_path())
-        .unwrap_or(selected_cli.binary);
-
-    let selected_model = prompt_model_selection(&theme, selected_cli)?;
+        .unwrap_or(binary_name);
 
     println!();
     println!("  Workspace:    {}", workspace.display());
     println!(
-        "  Coding CLI:   {} ({})",
-        selected_cli.label, selected_model
+        "  Agent:        {} ({})",
+        selected.label, selected.default_agent_name
     );
     println!("  Binary:       {}", resolved_binary);
     println!(
@@ -149,8 +136,7 @@ pub fn run_interactive_setup() -> Result<SetupResult> {
         anyhow::bail!("setup cancelled by user");
     }
 
-    let config_content =
-        generate_default_config_with_binary(selected_cli, &selected_model, resolved_binary);
+    let config_content = generate_acp_config(resolved_binary, selected.default_agent_name);
     let config_path = workspace.join("config/default.toml");
     if let Some(parent) = config_path.parent() {
         fs::create_dir_all(parent)?;
@@ -167,8 +153,8 @@ pub fn run_interactive_setup() -> Result<SetupResult> {
     Ok(SetupResult {
         workspace,
         config_path,
-        worker_kind: selected_cli.kind_tag,
-        model: selected_model,
+        worker_kind: selected.kind_tag,
+        model: selected.default_agent_name.to_string(),
     })
 }
 
@@ -203,8 +189,8 @@ fn print_environment_report(report: &EnvironmentReport) {
     println!();
 }
 
-fn format_cli_label(opt: &CliOption, report: &EnvironmentReport) -> String {
-    let probe = report.find_tool(opt.kind_tag);
+fn format_cli_label(opt: &AcpAgentOption, report: &EnvironmentReport) -> String {
+    let probe = report.find_tool(opt.command[0]);
     match probe.map(|p| &p.status) {
         Some(ToolStatus::Found {
             version, warnings, ..
@@ -226,58 +212,21 @@ fn format_cli_label(opt: &CliOption, report: &EnvironmentReport) -> String {
 }
 
 fn find_recommended_default(report: &EnvironmentReport) -> usize {
-    for (i, opt) in CLI_OPTIONS.iter().enumerate() {
-        if let Some(probe) = report.find_tool(opt.kind_tag) {
+    for (i, opt) in ACP_AGENT_OPTIONS.iter().enumerate() {
+        if let Some(probe) = report.find_tool(opt.command[0]) {
             if probe.is_found() && !probe.has_warnings() {
                 return i;
             }
         }
     }
-    for (i, opt) in CLI_OPTIONS.iter().enumerate() {
-        if let Some(probe) = report.find_tool(opt.kind_tag) {
+    for (i, opt) in ACP_AGENT_OPTIONS.iter().enumerate() {
+        if let Some(probe) = report.find_tool(opt.command[0]) {
             if probe.is_found() {
                 return i;
             }
         }
     }
     0
-}
-
-fn prompt_model_selection(theme: &ColorfulTheme, cli: &CliOption) -> Result<String> {
-    let mut items: Vec<String> = cli
-        .recommended_models
-        .iter()
-        .enumerate()
-        .map(|(i, m)| {
-            if i == 0 {
-                format!("{m} (recommended)")
-            } else {
-                m.to_string()
-            }
-        })
-        .collect();
-    items.push("Other (enter model name)".to_string());
-
-    let index = Select::with_theme(theme)
-        .with_prompt("Select model")
-        .items(&items)
-        .default(0)
-        .interact()
-        .context("failed to read model selection")?;
-
-    if index < cli.recommended_models.len() {
-        Ok(cli.recommended_models[index].to_string())
-    } else {
-        let custom: String = Input::with_theme(theme)
-            .with_prompt("Enter model name")
-            .interact_text()
-            .context("failed to read custom model name")?;
-        let custom = custom.trim().to_string();
-        if custom.is_empty() {
-            anyhow::bail!("model name must not be empty");
-        }
-        Ok(custom)
-    }
 }
 
 pub fn has_default_config() -> Result<bool> {
@@ -290,57 +239,11 @@ pub fn default_config_path() -> Result<PathBuf> {
     Ok(workspace.join("config/default.toml"))
 }
 
-fn generate_default_config(cli: &CliOption, model: &str) -> String {
-    generate_default_config_with_binary(cli, model, cli.binary)
-}
-
-fn generate_default_config_with_binary(cli: &CliOption, model: &str, binary: &str) -> String {
+fn generate_acp_config(binary: &str, agent_name: &str) -> String {
     let noop_command = if cfg!(windows) {
         r#"  ["cmd", "/c", "echo", "ok"]"#
     } else {
         r#"  ["/usr/bin/env", "true"]"#
-    };
-
-    let worker_section = match cli.kind_tag {
-        "codex_cli" => format!(
-            r#"[worker]
-kind = "codex_cli"
-
-[worker.codex]
-binary = "{binary}"
-model = "{model}"
-sandbox = "workspace-write"
-full_auto = true
-skip_git_repo_check = true
-resume_sessions = true"#,
-            binary = binary,
-            model = model,
-        ),
-        "claude_cli" => format!(
-            r#"[worker]
-kind = "claude_cli"
-
-[worker.claude]
-binary = "{binary}"
-model = "{model}"
-dangerously_skip_permissions = true
-resume_sessions = true"#,
-            binary = binary,
-            model = model,
-        ),
-        "gemini_cli" => format!(
-            r#"[worker]
-kind = "gemini_cli"
-
-[worker.gemini]
-binary = "{binary}"
-model = "{model}"
-sandbox = "workspace-write"
-resume_sessions = false"#,
-            binary = binary,
-            model = model,
-        ),
-        _ => unreachable!(),
     };
 
     format!(
@@ -353,7 +256,13 @@ runs_dir = ".loopsmith-runs"
 [workspace]
 isolation = "direct"
 
-{worker_section}
+[worker]
+kind = "acp"
+
+[worker.acp]
+command = ["{binary}"]
+agent_name = "{agent_name}"
+resume_sessions = true
 
 [prompts]
 planner = "prompts/planner.md"
@@ -382,7 +291,10 @@ require_screenshots = false
 commands = [
 {noop_command}
 ]
-"#
+"#,
+        binary = binary,
+        agent_name = agent_name,
+        noop_command = noop_command,
     )
 }
 
@@ -390,25 +302,13 @@ pub fn write_config_non_interactive(
     workspace: &Path,
     kind_tag: &str,
     binary: &str,
-    model: &str,
+    agent_name: &str,
 ) -> Result<PathBuf> {
-    let cli = CLI_OPTIONS
-        .iter()
-        .find(|opt| opt.kind_tag == kind_tag)
-        .with_context(|| format!("unknown worker kind: {kind_tag}"))?;
+    if kind_tag != "acp" {
+        anyhow::bail!("unsupported worker kind: {kind_tag}");
+    }
 
-    let effective_cli = CliOption {
-        label: cli.label,
-        kind_tag: cli.kind_tag,
-        binary: cli.binary,
-        recommended_models: cli.recommended_models,
-    };
-
-    let config_content = generate_default_config(&effective_cli, model);
-    let config_content = config_content.replace(
-        &format!("binary = \"{}\"", cli.binary),
-        &format!("binary = \"{binary}\""),
-    );
+    let config_content = generate_acp_config(binary, agent_name);
     let config_path = workspace.join("config/default.toml");
     if let Some(parent) = config_path.parent() {
         fs::create_dir_all(parent)?;
@@ -426,38 +326,50 @@ mod tests {
     use super::*;
 
     #[test]
-    fn generate_codex_config_is_valid_toml() {
-        let cli = &CLI_OPTIONS[0];
-        let config = generate_default_config(cli, "gpt-5.4");
+    fn generate_acp_codex_config_is_valid_toml() {
+        let config = generate_acp_config("codex", "codex");
         let parsed: toml::Value = toml::from_str(&config).expect("valid TOML");
         let worker = parsed.get("worker").expect("worker section");
         assert_eq!(
             worker.get("kind").and_then(|v| v.as_str()),
-            Some("codex_cli")
+            Some("acp")
+        );
+        let acp = worker.get("acp").expect("acp section");
+        assert_eq!(
+            acp.get("agent_name").and_then(|v| v.as_str()),
+            Some("codex")
         );
     }
 
     #[test]
-    fn generate_claude_config_is_valid_toml() {
-        let cli = &CLI_OPTIONS[1];
-        let config = generate_default_config(cli, "claude-sonnet-4-20250514");
+    fn generate_acp_claude_config_is_valid_toml() {
+        let config = generate_acp_config("claude", "claude");
         let parsed: toml::Value = toml::from_str(&config).expect("valid TOML");
         let worker = parsed.get("worker").expect("worker section");
         assert_eq!(
             worker.get("kind").and_then(|v| v.as_str()),
-            Some("claude_cli")
+            Some("acp")
+        );
+        let acp = worker.get("acp").expect("acp section");
+        assert_eq!(
+            acp.get("agent_name").and_then(|v| v.as_str()),
+            Some("claude")
         );
     }
 
     #[test]
-    fn generate_gemini_config_is_valid_toml() {
-        let cli = &CLI_OPTIONS[2];
-        let config = generate_default_config(cli, "gemini-2.5-pro");
+    fn generate_acp_gemini_config_is_valid_toml() {
+        let config = generate_acp_config("gemini", "gemini");
         let parsed: toml::Value = toml::from_str(&config).expect("valid TOML");
         let worker = parsed.get("worker").expect("worker section");
         assert_eq!(
             worker.get("kind").and_then(|v| v.as_str()),
-            Some("gemini_cli")
+            Some("acp")
+        );
+        let acp = worker.get("acp").expect("acp section");
+        assert_eq!(
+            acp.get("agent_name").and_then(|v| v.as_str()),
+            Some("gemini")
         );
     }
 
@@ -467,13 +379,13 @@ mod tests {
         let workspace = temp.path().join(".loopsmith");
         fs::create_dir_all(&workspace).expect("workspace");
 
-        let path = write_config_non_interactive(&workspace, "codex_cli", "codex", "gpt-5.4")
+        let path = write_config_non_interactive(&workspace, "acp", "codex", "codex")
             .expect("write");
 
         assert!(path.exists());
         let content = fs::read_to_string(&path).expect("read");
-        assert!(content.contains("codex_cli"));
-        assert!(content.contains("gpt-5.4"));
+        assert!(content.contains("kind = \"acp\""));
+        assert!(content.contains("agent_name = \"codex\""));
     }
 
     #[test]
@@ -493,13 +405,13 @@ mod tests {
         fs::write(schemas_dir.join("builder-handoff.json"), "{}\n").expect("schema");
         fs::write(schemas_dir.join("qa-report.json"), "{}\n").expect("schema");
 
-        for cli in CLI_OPTIONS {
-            let config_content = generate_default_config(cli, cli.recommended_models[0]);
-            let config_path = config_dir.join(format!("{}.toml", cli.kind_tag));
+        for opt in ACP_AGENT_OPTIONS {
+            let config_content = generate_acp_config(opt.command[0], opt.default_agent_name);
+            let config_path = config_dir.join(format!("{}.toml", opt.default_agent_name));
             fs::write(&config_path, config_content).expect("write config");
 
             crate::config::AppConfig::load(&config_path)
-                .unwrap_or_else(|e| panic!("failed to load {} config: {e:#}", cli.kind_tag));
+                .unwrap_or_else(|e| panic!("failed to load {} config: {e:#}", opt.default_agent_name));
         }
     }
 }

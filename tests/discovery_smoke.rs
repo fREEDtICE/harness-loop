@@ -64,9 +64,8 @@ fn cli_discover_uses_fallback_profile_when_live_refresh_produces_no_output()
         r#"{"name":"discovery-fixture","version":"0.2.0","scripts":{"test":"vitest","dev":"vite"},"dependencies":{"react":"18.3.0","zod":"3.23.8"}}"#,
     )?;
 
-    let fake_codex =
-        fixture.write_fake_codex_binary("fake-codex-no-output", "#!/bin/sh\nexit 0\n")?;
-    let codex_config = fixture.write_codex_config("codex-missing-output.toml", &fake_codex)?;
+    let fake_acp = fixture.write_fake_acp_binary("fake-acp-no-output", "")?;
+    let codex_config = fixture.write_codex_config("codex-missing-output.toml", &fake_acp)?;
     let output = fixture.discover_with_config(&codex_config)?;
     fixture.assert_success(&output)?;
 
@@ -153,6 +152,51 @@ fn simulated_cli_discover_persists_evidence_and_inference_artifacts() -> Result<
             assert_eq!(chains[0]["strength"], "strong");
         }
     }
+
+    Ok(())
+}
+
+#[test]
+fn acp_cli_discover_refreshes_workspace_profile_and_persists_worker_artifacts()
+-> Result<(), Box<dyn Error>> {
+    let fixture = DiscoveryFixture::new()?;
+    let initial_output = fixture.discover()?;
+    fixture.assert_success(&initial_output)?;
+
+    let discovery_root = fixture.workspace_dir.join(".loopsmith/discovery");
+    let cached_profile_json = fs::read_to_string(discovery_root.join("profile.json"))?;
+    fs::write(
+        fixture.workspace_dir.join("src/lib.rs"),
+        "pub fn fixture() {}\npub fn refreshed_by_acp() {}\n",
+    )?;
+
+    let fake_acp = fixture.write_fake_acp_binary("fake-acp-discovery", &cached_profile_json)?;
+    let acp_config = fixture.write_codex_config("acp-discovery.toml", &fake_acp)?;
+    let output = fixture.discover_with_config(&acp_config)?;
+    fixture.assert_success(&output)?;
+
+    let status = read_json(&discovery_root.join("status.json"))?;
+    let worker_result = read_json(&discovery_root.join("worker/result.json"))?;
+    let worker_stdout = fs::read_to_string(discovery_root.join("worker/stdout.log"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert_eq!(status["current_phase"], "ready");
+    assert_eq!(status["used_fallback_profile"], Value::Bool(false));
+    assert_eq!(status["last_refresh_error"], Value::Null);
+    assert!(discovery_root.join("worker/prompt.md").exists());
+    assert!(discovery_root.join("worker/workspace-profile.json").exists());
+    assert!(discovery_root.join("worker/stdout.log").exists());
+    assert!(discovery_root.join("worker/stderr.log").exists());
+    assert_eq!(
+        worker_result["command"][0],
+        Value::String(fake_acp.to_string_lossy().into_owned())
+    );
+    assert!(
+        worker_stdout.contains("\"summary\""),
+        "expected fake ACP stdout log to contain the emitted profile payload"
+    );
+    assert!(stdout.contains("phase: ready"));
+    assert!(stdout.contains("used_fallback_profile: false"));
 
     Ok(())
 }
@@ -379,15 +423,12 @@ runs_dir = ".loopsmith-runs"
 isolation = "direct"
 
 [worker]
-kind = "codex_cli"
+kind = "acp"
 
-[worker.codex]
-binary = "{binary}"
-model = "gpt-5.4"
-sandbox = "workspace-write"
-full_auto = false
+[worker.acp]
+command = ["{binary}"]
+agent_name = "fake-agent"
 resume_sessions = false
-skip_git_repo_check = true
 
 [prompts]
 discovery = "prompts/discovery.md"
@@ -421,13 +462,49 @@ commands = [
         Ok(config_path)
     }
 
-    fn write_fake_codex_binary(
+    fn write_fake_acp_binary(
         &self,
         file_name: &str,
-        contents: &str,
+        body: &str,
     ) -> Result<PathBuf, Box<dyn Error>> {
+        let data_dir = self.project_root.join(format!("{file_name}-data"));
+        fs::create_dir_all(&data_dir)?;
+        fs::write(data_dir.join("body.json"), body)?;
+
         let binary_path = self.project_root.join(file_name);
-        fs::write(&binary_path, contents)?;
+        let script = format!(
+            r#"#!/bin/sh
+set -eu
+
+DATA_DIR="{data_dir}"
+BODY_FILE="$DATA_DIR/body.json"
+SESSION_ID="fake-discovery-session"
+
+while IFS= read -r LINE; do
+  case "$LINE" in
+    *'"method":"initialize"'*|*'"method": "initialize"'*)
+      REQ_ID=$(printf '%s' "$LINE" | sed 's/.*"id" *: *\([0-9][0-9]*\).*/\1/')
+      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"protocolVersion":1,"agentCapabilities":{{"loadSession":false,"promptCapabilities":{{}},"mcpCapabilities":{{}}}},"authMethods":[]}}}}\n' "$REQ_ID"
+      ;;
+    *'"method":"session/new"'*|*'"method": "session/new"'*)
+      REQ_ID=$(printf '%s' "$LINE" | sed 's/.*"id" *: *\([0-9][0-9]*\).*/\1/')
+      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"%s"}}}}\n' "$REQ_ID" "$SESSION_ID"
+      ;;
+    *'"method":"session/prompt"'*|*'"method": "session/prompt"'*)
+      REQ_ID=$(printf '%s' "$LINE" | sed 's/.*"id" *: *\([0-9][0-9]*\).*/\1/')
+      BODY=$(cat "$BODY_FILE")
+      ESCAPED_BODY=$(printf '%s' "$BODY" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ')
+      printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"%s","update":{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"%s"}}}}}}}}\n' "$SESSION_ID" "$ESCAPED_BODY"
+      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"stopReason":"end_turn"}}}}\n' "$REQ_ID"
+      exit 0
+      ;;
+  esac
+done
+"#,
+            data_dir = data_dir.display(),
+        );
+
+        fs::write(&binary_path, script)?;
         make_executable(&binary_path)?;
         Ok(binary_path)
     }

@@ -5,10 +5,8 @@ members = [
     "crates/harness-desktop-shell",
     "crates/harness-core",
     "crates/loopsmith-orchestration",
+    "crates/loopsmith-acp",
     "crates/harness-worker-factory",
-    "crates/harness-worker-claude",
-    "crates/harness-worker-codex",
-    "crates/harness-worker-gemini",
     "crates/harness-worker-simulated",
 ]
 resolver = "2"

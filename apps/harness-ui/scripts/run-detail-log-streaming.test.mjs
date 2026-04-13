@@ -13,6 +13,7 @@ const {
   decodeUtf8,
   encodeUtf8,
   parseLogEvents,
+  subscribeToStageLogStream,
 } = moduleUnderTest;
 
 test("streamed JSONL updates keep command, file-change, and message rendering intact", () => {
@@ -125,6 +126,66 @@ test("snapshot replacement drops stale content and append offsets are byte-based
   assert.equal(decodeUtf8(appended), "你好\nlater\n");
 });
 
+test("closed SSE stream falls back to disk reads", async () => {
+  let buffer = new Uint8Array();
+  let diskReads = 0;
+  let source = null;
+
+  const unsubscribe = subscribeToStageLogStream({
+    loadStreamUrl: async () => "http://127.0.0.1:7777/stage-log",
+    createEventSource(url) {
+      source = new FakeEventSource(url);
+      return source;
+    },
+    readFromDisk() {
+      diskReads += 1;
+    },
+    getCurrentBytes() {
+      return buffer;
+    },
+    setBytes(nextBytes) {
+      buffer = nextBytes;
+    },
+  });
+
+  await flushPromises();
+  assert.notEqual(source, null);
+  assert.equal(source.url, "http://127.0.0.1:7777/stage-log");
+
+  source.emit("snapshot", chunkPayload(0, "alpha\n"));
+  assert.equal(decodeUtf8(buffer), "alpha\n");
+
+  source.readyState = 2;
+  source.onerror?.();
+  assert.equal(diskReads, 1);
+
+  unsubscribe();
+  assert.equal(source.closed, true);
+});
+
+test("stream URL resolution failure falls back to disk reads", async () => {
+  let diskReads = 0;
+
+  subscribeToStageLogStream({
+    loadStreamUrl: async () => {
+      throw new Error("offline");
+    },
+    createEventSource() {
+      throw new Error("should not create event source when URL lookup fails");
+    },
+    readFromDisk() {
+      diskReads += 1;
+    },
+    getCurrentBytes() {
+      return new Uint8Array();
+    },
+    setBytes() {},
+  });
+
+  await flushPromises();
+  assert.equal(diskReads, 1);
+});
+
 function line(value) {
   return `${JSON.stringify(value)}\n`;
 }
@@ -139,6 +200,36 @@ function chunkPayload(byteOffset, content) {
 function expectChunk(value) {
   assert.notEqual(value, null);
   return value;
+}
+
+async function flushPromises() {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+class FakeEventSource {
+  constructor(url) {
+    this.url = url;
+    this.readyState = 1;
+    this.closed = false;
+    this.onerror = null;
+    this.listeners = new Map();
+  }
+
+  addEventListener(eventName, listener) {
+    this.listeners.set(eventName, listener);
+  }
+
+  emit(eventName, data) {
+    const listener = this.listeners.get(eventName);
+    assert.ok(listener, `missing listener for ${eventName}`);
+    listener({ data });
+  }
+
+  close() {
+    this.closed = true;
+    this.readyState = 2;
+  }
 }
 
 async function loadModule(filePath) {

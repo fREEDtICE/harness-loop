@@ -10,7 +10,7 @@ pub struct EnvironmentReport {
     pub node: RuntimeProbe,
 }
 
-/// Probe result for a single CLI tool (codex, claude, gemini).
+/// Probe result for a single ACP-compatible CLI tool.
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolProbe {
     pub name: &'static str,
@@ -53,19 +53,19 @@ struct ToolSpec {
 
 const TOOL_SPECS: &[ToolSpec] = &[
     ToolSpec {
-        name: "codex_cli",
+        name: "codex",
         display_name: "Codex CLI",
         binary: "codex",
         needs_node: true,
     },
     ToolSpec {
-        name: "claude_cli",
+        name: "claude",
         display_name: "Claude Code",
         binary: "claude",
         needs_node: true,
     },
     ToolSpec {
-        name: "gemini_cli",
+        name: "gemini",
         display_name: "Gemini CLI",
         binary: "gemini",
         needs_node: true,
@@ -249,9 +249,9 @@ mod tests {
         assert_eq!(report.tools.len(), TOOL_SPECS.len());
 
         let names: Vec<&str> = report.tools.iter().map(|t| t.name).collect();
-        assert!(names.contains(&"codex_cli"));
-        assert!(names.contains(&"claude_cli"));
-        assert!(names.contains(&"gemini_cli"));
+        assert!(names.contains(&"codex"));
+        assert!(names.contains(&"claude"));
+        assert!(names.contains(&"gemini"));
     }
 
     #[test]

@@ -4,10 +4,10 @@ import { basename, formatDate } from "./utils";
 import { useTranslation } from "react-i18next";
 import type { RunState, FeatureRunState, RunStageRecord } from "./types";
 import {
-  applyStageLogStreamChunk,
   decodeUtf8,
   encodeUtf8,
   parseLogEvents,
+  subscribeToStageLogStream,
 } from "./runDetailLogModel";
 import type { LogEvent, MessagePayload } from "./runDetailLogModel";
 
@@ -729,7 +729,6 @@ function StageLogPanel({
     }
 
     let cancelled = false;
-    let source: EventSource | null = null;
 
     const readFromDisk = () => {
       invoke<string>("read_stage_log", { path: stage.stdout_log }).then(
@@ -750,53 +749,18 @@ function StageLogPanel({
       };
     }
 
-    invoke<string>("stage_log_stream_url", { path: stage.stdout_log }).then(
-      (url) => {
-        if (cancelled) {
-          return;
-        }
-
-        source = new EventSource(url);
-
-        const handleChunk = (eventName: "snapshot" | "append") => {
-          return (event: MessageEvent<string>) => {
-            if (cancelled) {
-              return;
-            }
-
-            const nextBytes = applyStageLogStreamChunk(
-              logBytesRef.current,
-              eventName,
-              event.data,
-            );
-
-            if (nextBytes === null) {
-              readFromDisk();
-              return;
-            }
-
-            setLogBytes(nextBytes);
-          };
-        };
-
-        source.addEventListener("snapshot", handleChunk("snapshot") as EventListener);
-        source.addEventListener("append", handleChunk("append") as EventListener);
-        source.onerror = () => {
-          if (!cancelled && source?.readyState === EventSource.CLOSED) {
-            readFromDisk();
-          }
-        };
-      },
-      () => {
-        if (!cancelled) {
-          readFromDisk();
-        }
-      },
-    );
+    const unsubscribe = subscribeToStageLogStream({
+      loadStreamUrl: () =>
+        invoke<string>("stage_log_stream_url", { path: stage.stdout_log }),
+      createEventSource: (url) => new EventSource(url),
+      readFromDisk,
+      getCurrentBytes: () => logBytesRef.current,
+      setBytes: setLogBytes,
+    });
 
     return () => {
       cancelled = true;
-      source?.close();
+      unsubscribe();
     };
   }, [expanded, isLive, setLogBytes, stage.stdout_log]);
 

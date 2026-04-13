@@ -13,32 +13,16 @@ use loopsmith_core::{
         PlannerConversationContext, PlannerConversationWorkerResult, WorkerAdapter, WorkerContext,
     },
 };
-use loopsmith_worker_claude::ClaudeCliWorker;
-use loopsmith_worker_codex::CodexCliWorker;
-use loopsmith_worker_gemini::GeminiCliWorker;
 use loopsmith_worker_simulated::SimulatedWorker;
+use loopsmith_acp::AcpWorker;
 
 pub fn build_worker_from_selection(selection: &WorkerSelection) -> Result<Box<dyn WorkerAdapter>> {
     match selection {
-        WorkerSelection::CodexCli { codex } => {
-            verify_worker_binary(&codex.binary, "codex", "npm install -g @openai/codex")?;
-            Ok(Box::new(CodexCliWorker::new(codex.clone())))
-        }
-        WorkerSelection::ClaudeCli { claude } => {
-            verify_worker_binary(
-                &claude.binary,
-                "claude",
-                "npm install -g @anthropic-ai/claude-code",
-            )?;
-            Ok(Box::new(ClaudeCliWorker::new(claude.clone())))
-        }
-        WorkerSelection::GeminiCli { gemini } => {
-            verify_worker_binary(
-                &gemini.binary,
-                "gemini",
-                "npm install -g @anthropic-ai/gemini-cli",
-            )?;
-            Ok(Box::new(GeminiCliWorker::new(gemini.clone())))
+        WorkerSelection::Acp { acp } => {
+            if let Some(binary) = acp.command.first() {
+                verify_worker_binary(binary, "acp-agent", "install the ACP-compatible agent")?;
+            }
+            Ok(Box::new(AcpWorker::new(acp.clone())))
         }
         WorkerSelection::Simulated { simulation } => {
             Ok(Box::new(SimulatedWorker::new(simulation.clone())))

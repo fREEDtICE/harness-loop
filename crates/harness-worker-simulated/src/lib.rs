@@ -192,7 +192,7 @@ impl WorkerAdapter for SimulatedWorker {
             changed_files: Vec::new(),
             verification: vec!["Simulation skipped workspace mutation.".to_string()],
             open_questions: vec![
-                "Replace the simulated worker with codex_cli for real runs.".to_string(),
+                "Replace the simulated worker with an ACP worker for real runs.".to_string(),
             ],
         })
         .context("failed to serialize simulated build handoff")?;

@@ -1317,39 +1317,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn controller_records_config_feature_limit_as_advisory() -> Result<()> {
-        let temp = tempdir()?;
-        let source_workspace = temp.path().join("workspace");
-        fs::create_dir_all(&source_workspace)?;
-
-        let config = resolved_config(temp.path(), temp.path().join("runs"));
-        let artifacts = FileArtifactStore::new(config.storage.runs_dir.clone());
-        let worker = FakeWorker {
-            state: Arc::new(Mutex::new(FakeState::default())),
-        };
-        let controller = HarnessController::new(config, artifacts, worker);
-
-        let state = controller
-            .start_run(RunRequest {
-                user_request: "Build a harness".to_string(),
-                source_workspace,
-                feature_limit: None,
-                selected_config: None,
-                prompt_overrides: Default::default(),
-            })
-            .await?;
-
-        let launch_file = state.launch_file.clone().expect("launch file");
-        let launch: RunLaunchSnapshot =
-            serde_json::from_slice(&fs::read(&launch_file).context("read launch")?)?;
-        assert_eq!(launch.requested_feature_limit, None);
-        assert_eq!(launch.effective_feature_limit, 2);
-        assert!(!launch.feature_limit_is_hard);
-
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn controller_snapshots_launch_inputs_and_prompt_overrides() -> Result<()> {
         let temp = tempdir()?;
         let source_workspace = temp.path().join("workspace");

@@ -8,24 +8,12 @@ runs_dir = ".loopsmith-runs"
 isolation = "git_worktree"
 
 [worker]
-kind = "codex_cli"
+kind = "acp"
 
-[worker.codex]
-binary = "codex"
-model = "gpt-5.4"
-sandbox = "workspace-write"
-full_auto = true
-skip_git_repo_check = true
+[worker.acp]
+command = ["codex"]
+agent_name = "codex"
 resume_sessions = true
-
-# Optional planner-stage override.
-# Use this when you want a different planner worker than the builder/evaluator worker.
-# [worker.planner]
-# kind = "simulated"
-#
-# [worker.planner.simulation]
-# evaluator_statuses = ["pass"]
-# session_prefix = "planner-simulated"
 
 [prompts]
 discovery = "prompts/discovery.md"
@@ -41,11 +29,8 @@ builder_handoff = "schemas/builder-handoff.json"
 qa_report = "schemas/qa-report.json"
 
 [runtime]
-# Advisory planner slice count. Use `--feature-limit` for a hard per-run cap.
 feature_limit = 3
 max_repair_attempts = 2
-# When true, a failed feature does not stop the run; remaining features continue.
-# resume will also continue past previously failed features.
 continue_after_failure = false
 
 [runtime.supervision]
@@ -60,15 +45,6 @@ start = ["pnpm", "dev"]
 working_dir = "."
 ready_url = "http://127.0.0.1:3000/"
 
-# Optional command-driven runtime stack example.
-# Useful for repo-owned container or orchestrator flows.
-# [[runtime.stacks]]
-# name = "compose"
-# up = ["docker", "compose", "up", "-d"]
-# down = ["docker", "compose", "down", "--remove-orphans"]
-# working_dir = "."
-# ready_url = "http://127.0.0.1:3000/"
-
 [evaluator]
 dimensions = ["product_depth", "correctness", "ux", "operability"]
 require_screenshots = false
@@ -76,11 +52,3 @@ commands = [
   ["cargo", "test"],
   ["pnpm", "test:e2e"]
 ]
-
-# Enable screenshot gating only after you provide a repo-specific capture command.
-# The harness replaces `{output}` with the artifact path and also exports:
-# CODEX_HARNESS_SCREENSHOT_OUTPUT, CODEX_HARNESS_SCREENSHOT_DIR,
-# CODEX_HARNESS_SCREENSHOT_NAME, and CODEX_HARNESS_ATTEMPT.
-# [[evaluator.screenshots]]
-# name = "home"
-# command = ["pnpm", "exec", "playwright", "screenshot", "--output", "{output}", "http://127.0.0.1:3000/"]

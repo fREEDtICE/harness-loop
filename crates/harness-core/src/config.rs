@@ -48,39 +48,21 @@ pub struct WorkerConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorkerSelection {
-    CodexCli { codex: CodexWorkerConfig },
-    ClaudeCli { claude: ClaudeWorkerConfig },
-    GeminiCli { gemini: GeminiWorkerConfig },
+    Acp { acp: AcpWorkerConfig },
     Simulated { simulation: SimulationWorkerConfig },
 }
 
 impl WorkerSelection {
     pub fn kind(&self) -> WorkerKind {
         match self {
-            Self::CodexCli { .. } => WorkerKind::CodexCli,
-            Self::ClaudeCli { .. } => WorkerKind::ClaudeCli,
-            Self::GeminiCli { .. } => WorkerKind::GeminiCli,
+            Self::Acp { .. } => WorkerKind::Acp,
             Self::Simulated { .. } => WorkerKind::Simulated,
         }
     }
 
-    pub fn codex(&self) -> Option<&CodexWorkerConfig> {
+    pub fn acp(&self) -> Option<&AcpWorkerConfig> {
         match self {
-            Self::CodexCli { codex } => Some(codex),
-            _ => None,
-        }
-    }
-
-    pub fn claude(&self) -> Option<&ClaudeWorkerConfig> {
-        match self {
-            Self::ClaudeCli { claude } => Some(claude),
-            _ => None,
-        }
-    }
-
-    pub fn gemini(&self) -> Option<&GeminiWorkerConfig> {
-        match self {
-            Self::GeminiCli { gemini } => Some(gemini),
+            Self::Acp { acp } => Some(acp),
             _ => None,
         }
     }
@@ -96,35 +78,17 @@ impl WorkerSelection {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkerKind {
-    CodexCli,
-    ClaudeCli,
-    GeminiCli,
+    Acp,
     Simulated,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CodexWorkerConfig {
-    pub binary: String,
-    pub model: String,
-    pub sandbox: String,
-    pub full_auto: bool,
-    pub skip_git_repo_check: bool,
-    pub resume_sessions: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ClaudeWorkerConfig {
-    pub binary: String,
-    pub model: String,
-    pub dangerously_skip_permissions: bool,
-    pub resume_sessions: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GeminiWorkerConfig {
-    pub binary: String,
-    pub model: String,
-    pub sandbox: String,
+pub struct AcpWorkerConfig {
+    pub command: Vec<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default = "default_acp_agent_name")]
+    pub agent_name: String,
     pub resume_sessions: bool,
 }
 
@@ -365,6 +329,10 @@ fn default_workspace_inference_schema_path() -> PathBuf {
 
 fn default_simulation_session_prefix() -> String {
     "simulated".to_string()
+}
+
+fn default_acp_agent_name() -> String {
+    "acp-agent".to_string()
 }
 
 fn default_startup_timeout_secs() -> u64 {
@@ -636,14 +604,11 @@ evaluator_statuses = ["pass"]
 session_prefix = "sim"
 
 [worker.planner]
-kind = "codex_cli"
+kind = "acp"
 
-[worker.planner.codex]
-binary = "codex"
-model = "o3"
-sandbox = "workspace-write"
-full_auto = true
-skip_git_repo_check = true
+[worker.planner.acp]
+command = ["fake-agent"]
+agent_name = "test-agent"
 resume_sessions = false
 
 [prompts]
@@ -674,8 +639,8 @@ commands = []
 
         let resolved = AppConfig::load(&config_file).expect("load config with planner override");
         let planner = resolved.planner_worker().expect("planner config");
-        assert_eq!(planner.selection.kind(), WorkerKind::CodexCli);
-        let codex = planner.selection.codex().expect("codex config");
-        assert_eq!(codex.model, "o3");
+        assert_eq!(planner.selection.kind(), WorkerKind::Acp);
+        let acp = planner.selection.acp().expect("acp config");
+        assert_eq!(acp.agent_name, "test-agent");
     }
 }

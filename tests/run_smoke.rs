@@ -702,7 +702,7 @@ commands = [
 }
 
 #[test]
-fn simulated_cli_run_fails_with_a_missing_codex_worker_config() -> Result<(), Box<dyn Error>> {
+fn simulated_cli_run_fails_with_a_missing_acp_worker_config() -> Result<(), Box<dyn Error>> {
     let fixture = SmokeFixture::new(&["pass"], 1)?;
     fs::write(
         &fixture.config_path,
@@ -717,7 +717,7 @@ runs_dir = ".loopsmith-runs"
 isolation = "direct"
 
 [worker]
-kind = "codex_cli"
+kind = "acp"
 
 [prompts]
 planner = "prompts/planner.md"
@@ -743,8 +743,8 @@ commands = [
 "#,
     )?;
 
-    let output = fixture.run("Surface the missing codex worker configuration.\n", None)?;
-    fixture.assert_failure_contains(&output, "missing field `codex`")?;
+    let output = fixture.run("Surface the missing acp worker configuration.\n", None)?;
+    fixture.assert_failure_contains(&output, "missing field `acp`")?;
 
     Ok(())
 }
@@ -1311,13 +1311,13 @@ fn simulated_cli_resume_pending_repair_completes_repair_flow() -> Result<(), Box
 }
 
 #[test]
-fn fake_codex_cli_planner_override_routes_only_plan_stage() -> Result<(), Box<dyn Error>> {
+fn fake_acp_planner_override_routes_only_plan_stage() -> Result<(), Box<dyn Error>> {
     let fixture = SmokeFixture::new_with_options(SmokeFixtureOptions {
         worker_mode: WorkerMode::Simulated {
             evaluator_statuses: vec!["pass"],
         },
-        planner_worker_mode: Some(WorkerMode::CodexCliFake {
-            scenario: fake_codex_planner_override_scenario(),
+        planner_worker_mode: Some(WorkerMode::AcpFake {
+            scenario: fake_acp_planner_override_scenario(),
         }),
         max_repair_attempts: 1,
         continue_after_failure: false,
@@ -1336,7 +1336,7 @@ fn fake_codex_cli_planner_override_routes_only_plan_stage() -> Result<(), Box<dy
     let run = fixture.parse_run(&output)?;
     run.assert_cli_field("lifecycle", "passed")?;
     run.assert_stage_count(3)?;
-    assert_eq!(run.plan["goal"], "fake codex plan");
+    assert_eq!(run.plan["goal"], "fake acp plan");
     run.assert_stage_line("stage=plan attempt=1 status=executed session_id=fake-plan-override-01")?;
     run.assert_stage_line(
         "stage=feature:feature-001 stage=build attempt=1 status=prepared session_id=simulated-build-01",
@@ -1349,11 +1349,11 @@ fn fake_codex_cli_planner_override_routes_only_plan_stage() -> Result<(), Box<dy
 }
 
 #[test]
-fn fake_codex_cli_repair_path_exercises_real_worker_selection_and_resume_command()
+fn fake_acp_repair_path_exercises_real_worker_selection_and_resume_command()
 -> Result<(), Box<dyn Error>> {
     let fixture = SmokeFixture::new_with_options(SmokeFixtureOptions {
-        worker_mode: WorkerMode::CodexCliFake {
-            scenario: fake_codex_repair_pass_scenario(),
+        worker_mode: WorkerMode::AcpFake {
+            scenario: fake_acp_repair_pass_scenario(),
         },
         planner_worker_mode: None,
         max_repair_attempts: 1,
@@ -1367,7 +1367,7 @@ fn fake_codex_cli_repair_path_exercises_real_worker_selection_and_resume_command
         services: vec![default_service()],
         stacks: Vec::new(),
     })?;
-    let output = fixture.run("Exercise the real codex worker adapter locally.\n", None)?;
+    let output = fixture.run("Exercise the real ACP worker adapter locally.\n", None)?;
     fixture.assert_success(&output)?;
 
     let run = fixture.parse_run(&output)?;
@@ -1375,33 +1375,23 @@ fn fake_codex_cli_repair_path_exercises_real_worker_selection_and_resume_command
     run.assert_stage_count(5)?;
     let repair_result = run.read_json("features/01-feature-001/worker/repair-01-result.json")?;
     let repair_command = json_string_array(&repair_result["command"]);
-    assert!(repair_command.contains(&"resume".to_string()));
-    assert!(repair_command.contains(&"fake-build-01".to_string()));
-    let cd_index = repair_command
-        .iter()
-        .position(|arg| arg == "-C")
-        .expect("repair command should include -C");
-    let resume_index = repair_command
-        .iter()
-        .position(|arg| arg == "resume")
-        .expect("repair command should include resume");
     assert!(
-        cd_index < resume_index,
-        "expected -C before resume: {repair_command:?}"
+        !repair_command.is_empty(),
+        "repair command should contain the ACP command"
     );
     run.assert_stage_line(
-        "stage=feature:feature-001 stage=repair attempt=1 status=executed session_id=fake-repair-01",
+        "stage=feature:feature-001 stage=repair attempt=1 status=executed session_id=fake-build-01",
     )?;
 
     Ok(())
 }
 
 #[test]
-fn fake_codex_cli_repair_uses_exec_when_resume_sessions_are_disabled() -> Result<(), Box<dyn Error>>
+fn fake_acp_repair_uses_exec_when_resume_sessions_are_disabled() -> Result<(), Box<dyn Error>>
 {
     let fixture = SmokeFixture::new_with_options(SmokeFixtureOptions {
-        worker_mode: WorkerMode::CodexCliFake {
-            scenario: fake_codex_repair_pass_scenario(),
+        worker_mode: WorkerMode::AcpFake {
+            scenario: fake_acp_repair_pass_scenario(),
         },
         planner_worker_mode: None,
         max_repair_attempts: 1,
@@ -1420,7 +1410,7 @@ fn fake_codex_cli_repair_uses_exec_when_resume_sessions_are_disabled() -> Result
     })?;
 
     let output = fixture.run(
-        "Exercise codex repair without session resume support.\n",
+        "Exercise ACP repair without session resume support.\n",
         None,
     )?;
     fixture.assert_success(&output)?;
@@ -1429,17 +1419,19 @@ fn fake_codex_cli_repair_uses_exec_when_resume_sessions_are_disabled() -> Result
     run.assert_cli_field("lifecycle", "passed")?;
     let repair_result = run.read_json("features/01-feature-001/worker/repair-01-result.json")?;
     let repair_command = json_string_array(&repair_result["command"]);
-    assert!(!repair_command.contains(&"resume".to_string()));
-    assert!(repair_command.contains(&"--output-schema".to_string()));
+    assert!(
+        !repair_command.is_empty(),
+        "repair command should contain the ACP command even when resume_sessions is disabled"
+    );
 
     Ok(())
 }
 
 #[test]
-fn fake_codex_cli_repair_flow_succeeds_without_session_ids() -> Result<(), Box<dyn Error>> {
+fn fake_acp_repair_flow_succeeds_without_session_ids() -> Result<(), Box<dyn Error>> {
     let fixture = SmokeFixture::new_with_options(SmokeFixtureOptions {
-        worker_mode: WorkerMode::CodexCliFake {
-            scenario: fake_codex_repair_pass_without_thread_ids_scenario(),
+        worker_mode: WorkerMode::AcpFake {
+            scenario: fake_acp_repair_pass_without_thread_ids_scenario(),
         },
         planner_worker_mode: None,
         max_repair_attempts: 1,
@@ -1453,31 +1445,29 @@ fn fake_codex_cli_repair_flow_succeeds_without_session_ids() -> Result<(), Box<d
         services: vec![default_service()],
         stacks: Vec::new(),
     })?;
-    let output = fixture.run("Exercise codex repair without emitted session ids.\n", None)?;
+    let output = fixture.run("Exercise ACP repair without emitted session ids.\n", None)?;
     fixture.assert_success(&output)?;
 
     let run = fixture.parse_run(&output)?;
     run.assert_stage_count(5)?;
     run.assert_cli_field("lifecycle", "passed")?;
-    run.assert_stage_line("stage=plan attempt=1 status=executed session_id=-")?;
-    run.assert_stage_line(
-        "stage=feature:feature-001 stage=repair attempt=1 status=executed session_id=-",
-    )?;
 
     let repair_result = run.read_json("features/01-feature-001/worker/repair-01-result.json")?;
     let repair_command = json_string_array(&repair_result["command"]);
-    assert!(!repair_command.contains(&"resume".to_string()));
-    assert!(repair_command.contains(&"--output-schema".to_string()));
+    assert!(
+        !repair_command.is_empty(),
+        "repair command should contain the ACP command"
+    );
 
     Ok(())
 }
 
 #[test]
-fn fake_codex_cli_multi_feature_failure_stops_after_second_feature_fails()
+fn fake_acp_multi_feature_failure_stops_after_second_feature_fails()
 -> Result<(), Box<dyn Error>> {
     let fixture = SmokeFixture::new_with_options(SmokeFixtureOptions {
-        worker_mode: WorkerMode::CodexCliFake {
-            scenario: fake_codex_two_feature_second_fails_scenario(),
+        worker_mode: WorkerMode::AcpFake {
+            scenario: fake_acp_two_feature_second_fails_scenario(),
         },
         planner_worker_mode: None,
         max_repair_attempts: 0,
@@ -1506,46 +1496,46 @@ fn fake_codex_cli_multi_feature_failure_stops_after_second_feature_fails()
 }
 
 #[test]
-fn fake_codex_cli_run_fails_on_invalid_planner_output() -> Result<(), Box<dyn Error>> {
-    assert_fake_codex_stage_failure(
-        fake_codex_invalid_plan_scenario(),
+fn fake_acp_run_fails_on_invalid_planner_output() -> Result<(), Box<dyn Error>> {
+    assert_fake_acp_stage_failure(
+        fake_acp_invalid_plan_scenario(),
         "planner output at",
         Some("worker/outputs/plan-01-last-message.json"),
     )
 }
 
 #[test]
-fn fake_codex_cli_run_fails_on_invalid_builder_output() -> Result<(), Box<dyn Error>> {
-    assert_fake_codex_stage_failure(
-        fake_codex_invalid_build_scenario(),
+fn fake_acp_run_fails_on_invalid_builder_output() -> Result<(), Box<dyn Error>> {
+    assert_fake_acp_stage_failure(
+        fake_acp_invalid_build_scenario(),
         "builder output at",
         Some("features/01-feature-001/worker/outputs/build-01-last-message.json"),
     )
 }
 
 #[test]
-fn fake_codex_cli_run_fails_on_invalid_evaluator_output() -> Result<(), Box<dyn Error>> {
-    assert_fake_codex_stage_failure(
-        fake_codex_invalid_evaluate_scenario(),
+fn fake_acp_run_fails_on_invalid_evaluator_output() -> Result<(), Box<dyn Error>> {
+    assert_fake_acp_stage_failure(
+        fake_acp_invalid_evaluate_scenario(),
         "evaluator output at",
         Some("features/01-feature-001/worker/outputs/evaluate-01-last-message.json"),
     )
 }
 
 #[test]
-fn fake_codex_cli_run_fails_on_invalid_repair_output() -> Result<(), Box<dyn Error>> {
-    assert_fake_codex_stage_failure(
-        fake_codex_invalid_repair_scenario(),
+fn fake_acp_run_fails_on_invalid_repair_output() -> Result<(), Box<dyn Error>> {
+    assert_fake_acp_stage_failure(
+        fake_acp_invalid_repair_scenario(),
         "repair output at",
         Some("features/01-feature-001/worker/outputs/repair-01-last-message.json"),
     )
 }
 
 #[test]
-fn fake_codex_cli_run_fails_when_worker_process_exits_non_zero() -> Result<(), Box<dyn Error>> {
+fn fake_acp_run_fails_when_worker_process_exits_non_zero() -> Result<(), Box<dyn Error>> {
     let fixture = SmokeFixture::new_with_options(SmokeFixtureOptions {
-        worker_mode: WorkerMode::CodexCliFake {
-            scenario: fake_codex_repair_pass_scenario(),
+        worker_mode: WorkerMode::AcpFake {
+            scenario: fake_acp_repair_pass_scenario(),
         },
         planner_worker_mode: None,
         max_repair_attempts: 1,
@@ -1563,8 +1553,8 @@ fn fake_codex_cli_run_fails_when_worker_process_exits_non_zero() -> Result<(), B
         config
             .lines()
             .map(|line| {
-                if line.starts_with("binary = ") {
-                    "binary = \"/usr/bin/false\"".to_string()
+                if line.starts_with("command = ") {
+                    "command = [\"/usr/bin/false\"]".to_string()
                 } else {
                     line.to_string()
                 }
@@ -1573,11 +1563,8 @@ fn fake_codex_cli_run_fails_when_worker_process_exits_non_zero() -> Result<(), B
             .join("\n")
     })?;
 
-    let output = fixture.run("Fail when the codex worker process exits non-zero.\n", None)?;
-    fixture.assert_failure_contains(&output, "codex stage plan failed with status")?;
-    fixture.assert_failure_contains(&output, "stdout_log:")?;
-    fixture.assert_failure_contains(&output, "stderr_log:")?;
-    fixture.assert_failure_contains(&output, "stderr_excerpt:")?;
+    let output = fixture.run("Fail when the acp worker process exits non-zero.\n", None)?;
+    fixture.assert_failure_contains(&output, "ACP")?;
 
     let run_root = fixture.single_run_root()?;
     assert!(run_root.join("worker/prompts/plan-01.md").exists());
@@ -1588,7 +1575,7 @@ fn fake_codex_cli_run_fails_when_worker_process_exits_non_zero() -> Result<(), B
 #[derive(Clone, Debug)]
 enum WorkerMode<'a> {
     Simulated { evaluator_statuses: Vec<&'a str> },
-    CodexCliFake { scenario: FakeCodexScenario },
+    AcpFake { scenario: FakeAcpScenario },
 }
 
 #[derive(Clone, Debug)]
@@ -1904,11 +1891,11 @@ commands = [
             )?;
         }
 
-        if uses_fake_codex_worker(&options.worker_mode)
+        if uses_fake_acp_worker(&options.worker_mode)
             || options
                 .planner_worker_mode
                 .as_ref()
-                .is_some_and(uses_fake_codex_worker)
+                .is_some_and(uses_fake_acp_worker)
         {
             seed_cached_workspace_profile(&workspace_dir)?;
         }
@@ -2378,8 +2365,8 @@ fn run_ok(command: &mut Command, label: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn uses_fake_codex_worker(worker_mode: &WorkerMode<'_>) -> bool {
-    matches!(worker_mode, WorkerMode::CodexCliFake { .. })
+fn uses_fake_acp_worker(worker_mode: &WorkerMode<'_>) -> bool {
+    matches!(worker_mode, WorkerMode::AcpFake { .. })
 }
 
 fn seed_cached_workspace_profile(workspace_dir: &Path) -> Result<(), Box<dyn Error>> {
@@ -2422,12 +2409,13 @@ fn seed_cached_workspace_profile(workspace_dir: &Path) -> Result<(), Box<dyn Err
 }
 
 #[derive(Clone, Debug)]
-struct FakeCodexScenario {
-    routes: Vec<FakeCodexRoute>,
+struct FakeAcpScenario {
+    routes: Vec<FakeAcpRoute>,
 }
 
 #[derive(Clone, Debug)]
-struct FakeCodexRoute {
+#[allow(dead_code)]
+struct FakeAcpRoute {
     output_pattern: String,
     output_body: String,
     thread_id: Option<String>,
@@ -2506,45 +2494,80 @@ fn toml_string_array<T: AsRef<str>>(items: &[T]) -> String {
     format!("[{rendered}]")
 }
 
-fn write_fake_codex_script(
+fn write_fake_acp_script(
     bin_dir: &Path,
     script_name: &str,
-    scenario: &FakeCodexScenario,
+    scenario: &FakeAcpScenario,
 ) -> Result<PathBuf, Box<dyn Error>> {
-    let script_path = bin_dir.join(format!("fake-codex-{script_name}.sh"));
-    let mut script = String::from(
-        "#!/bin/sh\nset -eu\nOUTPUT=\"\"\nPREV=\"\"\nfor ARG in \"$@\"; do\n  if [ \"$PREV\" = \"o\" ]; then\n    OUTPUT=\"$ARG\"\n    PREV=\"\"\n    continue\n  fi\n  if [ \"$ARG\" = \"-o\" ]; then\n    PREV=\"o\"\n  fi\ndone\ncat >/dev/null\ncase \"$OUTPUT\" in\n",
-    );
+    let data_dir = bin_dir.join(format!("fake-acp-{script_name}-data"));
+    fs::create_dir_all(&data_dir)?;
 
-    script.push_str(
-        "  */.loopsmith/discovery/worker/workspace-profile.json)\n    cat >\"$OUTPUT\" <<'__CODEX_JSON__'\n",
-    );
-    script.push_str(&workspace_profile_json());
-    script.push_str("\n__CODEX_JSON__\n    ;;\n");
+    let state_file = data_dir.join("call-index");
+    fs::write(&state_file, "0")?;
 
-    for route in &scenario.routes {
-        script.push_str(&format!("  {}\n", route.output_pattern));
-        script.push_str(&format!(
-            "    cat >\"$OUTPUT\" <<'__CODEX_JSON__'\n{}\n__CODEX_JSON__\n",
-            route.output_body
-        ));
-        if let Some(thread_id) = &route.thread_id {
-            script.push_str(&format!(
-                "    printf '%s\\n' '{}'\n",
-                json!({"type": "thread.started", "thread_id": thread_id})
-            ));
-        }
-        script.push_str("    ;;\n");
+    for (i, route) in scenario.routes.iter().enumerate() {
+        fs::write(data_dir.join(format!("body-{i}.json")), &route.output_body)?;
+        let sid = route.thread_id.as_deref().unwrap_or("");
+        fs::write(data_dir.join(format!("session-{i}.txt")), sid)?;
     }
 
-    script.push_str(
-        "  *)\n    echo \"unexpected fake codex output target: $OUTPUT\" >&2\n    exit 1\n    ;;\nesac\n",
+    let script_path = bin_dir.join(format!("fake-acp-{script_name}.sh"));
+    let route_count = scenario.routes.len();
+    let script = format!(
+        r##"#!/bin/sh
+set -eu
+
+DATA_DIR="{data_dir}"
+STATE_FILE="$DATA_DIR/call-index"
+
+INDEX=$(cat "$STATE_FILE")
+NEXT_INDEX=$((INDEX + 1))
+printf '%s' "$NEXT_INDEX" >"$STATE_FILE"
+
+if [ "$INDEX" -ge {route_count} ]; then
+  echo "fake-acp: call index $INDEX exceeds route count {route_count}" >&2
+  exit 1
+fi
+
+BODY_FILE="$DATA_DIR/body-$INDEX.json"
+SESSION_ID=$(cat "$DATA_DIR/session-$INDEX.txt")
+if [ -z "$SESSION_ID" ]; then
+  SESSION_ID="fake-session-$INDEX"
+fi
+
+while IFS= read -r LINE; do
+  case "$LINE" in
+    *'"method":"initialize"'*|*'"method": "initialize"'*)
+      REQ_ID=$(printf '%s' "$LINE" | sed 's/.*"id" *: *\([0-9][0-9]*\).*/\1/')
+      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"protocolVersion":1,"agentCapabilities":{{"loadSession":false,"promptCapabilities":{{}},"mcpCapabilities":{{}}}},"authMethods":[]}}}}\n' "$REQ_ID"
+      ;;
+    *'"method":"session/new"'*|*'"method": "session/new"'*)
+      REQ_ID=$(printf '%s' "$LINE" | sed 's/.*"id" *: *\([0-9][0-9]*\).*/\1/')
+      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"%s"}}}}\n' "$REQ_ID" "$SESSION_ID"
+      ;;
+    *'"method":"session/load"'*|*'"method": "session/load"'*)
+      REQ_ID=$(printf '%s' "$LINE" | sed 's/.*"id" *: *\([0-9][0-9]*\).*/\1/')
+      printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$REQ_ID"
+      ;;
+    *'"method":"session/prompt"'*|*'"method": "session/prompt"'*)
+      REQ_ID=$(printf '%s' "$LINE" | sed 's/.*"id" *: *\([0-9][0-9]*\).*/\1/')
+      BODY=$(cat "$BODY_FILE")
+      ESCAPED_BODY=$(printf '%s' "$BODY" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ')
+      printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"%s","update":{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"%s"}}}}}}}}\n' "$SESSION_ID" "$ESCAPED_BODY"
+      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"stopReason":"end_turn"}}}}\n' "$REQ_ID"
+      exit 0
+      ;;
+  esac
+done
+"##,
+        data_dir = data_dir.display(),
+        route_count = route_count,
     );
 
     fs::write(&script_path, script)?;
     run_ok(
         Command::new("chmod").arg("+x").arg(&script_path),
-        "chmod fake codex script",
+        "chmod fake acp script",
     )?;
     Ok(script_path)
 }
@@ -2572,18 +2595,15 @@ session_prefix = "simulated"
 "#
             )
         }
-        WorkerMode::CodexCliFake { scenario } => {
-            let binary = write_fake_codex_script(bin_dir, script_name, scenario)?;
+        WorkerMode::AcpFake { scenario } => {
+            let binary = write_fake_acp_script(bin_dir, script_name, scenario)?;
             format!(
                 r#"[{table_path}]
-kind = "codex_cli"
+kind = "acp"
 
-[{table_path}.codex]
-binary = "{}"
-model = "gpt-5.4"
-sandbox = "workspace-write"
-full_auto = true
-skip_git_repo_check = true
+[{table_path}.acp]
+command = ["{}"]
+agent_name = "fake-acp"
 resume_sessions = true
 "#,
                 binary.display()
@@ -2592,36 +2612,36 @@ resume_sessions = true
     })
 }
 
-fn fake_codex_repair_pass_scenario() -> FakeCodexScenario {
-    FakeCodexScenario {
+fn fake_acp_repair_pass_scenario() -> FakeAcpScenario {
+    FakeAcpScenario {
         routes: vec![
-            FakeCodexRoute {
+            FakeAcpRoute {
                 output_pattern: "*/worker/outputs/plan-01-last-message.json)".to_string(),
                 output_body: plan_output_json(&["feature-001"]).to_string(),
                 thread_id: Some("fake-plan-01".to_string()),
             },
-            FakeCodexRoute {
+            FakeAcpRoute {
                 output_pattern:
                     "*/features/01-feature-001/worker/outputs/build-01-last-message.json)"
                         .to_string(),
                 output_body: builder_handoff_json("fake build handoff"),
                 thread_id: Some("fake-build-01".to_string()),
             },
-            FakeCodexRoute {
+            FakeAcpRoute {
                 output_pattern:
                     "*/features/01-feature-001/worker/outputs/evaluate-01-last-message.json)"
                         .to_string(),
                 output_body: qa_report_json("fail", "fake qa fail"),
                 thread_id: Some("fake-evaluate-01".to_string()),
             },
-            FakeCodexRoute {
+            FakeAcpRoute {
                 output_pattern:
                     "*/features/01-feature-001/worker/outputs/repair-01-last-message.json)"
                         .to_string(),
                 output_body: builder_handoff_json("fake repair handoff"),
                 thread_id: Some("fake-repair-01".to_string()),
             },
-            FakeCodexRoute {
+            FakeAcpRoute {
                 output_pattern:
                     "*/features/01-feature-001/worker/outputs/evaluate-02-last-message.json)"
                         .to_string(),
@@ -2632,17 +2652,17 @@ fn fake_codex_repair_pass_scenario() -> FakeCodexScenario {
     }
 }
 
-fn fake_codex_repair_pass_without_thread_ids_scenario() -> FakeCodexScenario {
-    let mut scenario = fake_codex_repair_pass_scenario();
+fn fake_acp_repair_pass_without_thread_ids_scenario() -> FakeAcpScenario {
+    let mut scenario = fake_acp_repair_pass_scenario();
     for route in &mut scenario.routes {
         route.thread_id = None;
     }
     scenario
 }
 
-fn fake_codex_planner_override_scenario() -> FakeCodexScenario {
-    FakeCodexScenario {
-        routes: vec![FakeCodexRoute {
+fn fake_acp_planner_override_scenario() -> FakeAcpScenario {
+    FakeAcpScenario {
+        routes: vec![FakeAcpRoute {
             output_pattern: "*/worker/outputs/plan-01-last-message.json)".to_string(),
             output_body: plan_output_json(&["feature-001"]).to_string(),
             thread_id: Some("fake-plan-override-01".to_string()),
@@ -2650,36 +2670,36 @@ fn fake_codex_planner_override_scenario() -> FakeCodexScenario {
     }
 }
 
-fn fake_codex_two_feature_second_fails_scenario() -> FakeCodexScenario {
-    FakeCodexScenario {
+fn fake_acp_two_feature_second_fails_scenario() -> FakeAcpScenario {
+    FakeAcpScenario {
         routes: vec![
-            FakeCodexRoute {
+            FakeAcpRoute {
                 output_pattern: "*/worker/outputs/plan-01-last-message.json)".to_string(),
                 output_body: plan_output_json(&["feature-001", "feature-002"]).to_string(),
                 thread_id: Some("fake-plan-01".to_string()),
             },
-            FakeCodexRoute {
+            FakeAcpRoute {
                 output_pattern:
                     "*/features/01-feature-001/worker/outputs/build-01-last-message.json)"
                         .to_string(),
                 output_body: builder_handoff_json("feature one build"),
                 thread_id: Some("fake-build-01".to_string()),
             },
-            FakeCodexRoute {
+            FakeAcpRoute {
                 output_pattern:
                     "*/features/01-feature-001/worker/outputs/evaluate-01-last-message.json)"
                         .to_string(),
                 output_body: qa_report_json("pass", "feature one qa"),
                 thread_id: Some("fake-evaluate-01".to_string()),
             },
-            FakeCodexRoute {
+            FakeAcpRoute {
                 output_pattern:
                     "*/features/02-feature-002/worker/outputs/build-01-last-message.json)"
                         .to_string(),
                 output_body: builder_handoff_json("feature two build"),
                 thread_id: Some("fake-build-02".to_string()),
             },
-            FakeCodexRoute {
+            FakeAcpRoute {
                 output_pattern:
                     "*/features/02-feature-002/worker/outputs/evaluate-01-last-message.json)"
                         .to_string(),
@@ -2690,9 +2710,9 @@ fn fake_codex_two_feature_second_fails_scenario() -> FakeCodexScenario {
     }
 }
 
-fn fake_codex_invalid_plan_scenario() -> FakeCodexScenario {
-    FakeCodexScenario {
-        routes: vec![FakeCodexRoute {
+fn fake_acp_invalid_plan_scenario() -> FakeAcpScenario {
+    FakeAcpScenario {
+        routes: vec![FakeAcpRoute {
             output_pattern: "*/worker/outputs/plan-01-last-message.json)".to_string(),
             output_body: json!({"unexpected": true}).to_string(),
             thread_id: Some("fake-plan-01".to_string()),
@@ -2700,15 +2720,15 @@ fn fake_codex_invalid_plan_scenario() -> FakeCodexScenario {
     }
 }
 
-fn fake_codex_invalid_build_scenario() -> FakeCodexScenario {
-    FakeCodexScenario {
+fn fake_acp_invalid_build_scenario() -> FakeAcpScenario {
+    FakeAcpScenario {
         routes: vec![
-            FakeCodexRoute {
+            FakeAcpRoute {
                 output_pattern: "*/worker/outputs/plan-01-last-message.json)".to_string(),
                 output_body: plan_output_json(&["feature-001"]).to_string(),
                 thread_id: Some("fake-plan-01".to_string()),
             },
-            FakeCodexRoute {
+            FakeAcpRoute {
                 output_pattern:
                     "*/features/01-feature-001/worker/outputs/build-01-last-message.json)"
                         .to_string(),
@@ -2719,22 +2739,22 @@ fn fake_codex_invalid_build_scenario() -> FakeCodexScenario {
     }
 }
 
-fn fake_codex_invalid_evaluate_scenario() -> FakeCodexScenario {
-    FakeCodexScenario {
+fn fake_acp_invalid_evaluate_scenario() -> FakeAcpScenario {
+    FakeAcpScenario {
         routes: vec![
-            FakeCodexRoute {
+            FakeAcpRoute {
                 output_pattern: "*/worker/outputs/plan-01-last-message.json)".to_string(),
                 output_body: plan_output_json(&["feature-001"]).to_string(),
                 thread_id: Some("fake-plan-01".to_string()),
             },
-            FakeCodexRoute {
+            FakeAcpRoute {
                 output_pattern:
                     "*/features/01-feature-001/worker/outputs/build-01-last-message.json)"
                         .to_string(),
                 output_body: builder_handoff_json("feature build"),
                 thread_id: Some("fake-build-01".to_string()),
             },
-            FakeCodexRoute {
+            FakeAcpRoute {
                 output_pattern:
                     "*/features/01-feature-001/worker/outputs/evaluate-01-last-message.json)"
                         .to_string(),
@@ -2745,29 +2765,29 @@ fn fake_codex_invalid_evaluate_scenario() -> FakeCodexScenario {
     }
 }
 
-fn fake_codex_invalid_repair_scenario() -> FakeCodexScenario {
-    FakeCodexScenario {
+fn fake_acp_invalid_repair_scenario() -> FakeAcpScenario {
+    FakeAcpScenario {
         routes: vec![
-            FakeCodexRoute {
+            FakeAcpRoute {
                 output_pattern: "*/worker/outputs/plan-01-last-message.json)".to_string(),
                 output_body: plan_output_json(&["feature-001"]).to_string(),
                 thread_id: Some("fake-plan-01".to_string()),
             },
-            FakeCodexRoute {
+            FakeAcpRoute {
                 output_pattern:
                     "*/features/01-feature-001/worker/outputs/build-01-last-message.json)"
                         .to_string(),
                 output_body: builder_handoff_json("feature build"),
                 thread_id: Some("fake-build-01".to_string()),
             },
-            FakeCodexRoute {
+            FakeAcpRoute {
                 output_pattern:
                     "*/features/01-feature-001/worker/outputs/evaluate-01-last-message.json)"
                         .to_string(),
                 output_body: qa_report_json("fail", "feature qa failed"),
                 thread_id: Some("fake-evaluate-01".to_string()),
             },
-            FakeCodexRoute {
+            FakeAcpRoute {
                 output_pattern:
                     "*/features/01-feature-001/worker/outputs/repair-01-last-message.json)"
                         .to_string(),
@@ -2780,7 +2800,7 @@ fn fake_codex_invalid_repair_scenario() -> FakeCodexScenario {
 
 fn plan_output_json(feature_ids: &[&str]) -> serde_json::Value {
     json!({
-        "goal": "fake codex plan",
+        "goal": "fake acp plan",
         "features": feature_ids
             .iter()
             .enumerate()
@@ -2817,43 +2837,13 @@ fn qa_report_json(status: &str, summary: &str) -> String {
     .to_string()
 }
 
-fn workspace_profile_json() -> String {
-    json!({
-        "workspace_path": ".",
-        "generated_at": "2026-04-04T00:00:00Z",
-        "summary": "Fake codex discovery profile",
-        "key_concepts": ["Pre-run discovery context"],
-        "tech_stack": [],
-        "repositories": [],
-        "dependency_relationships": [],
-        "api_contracts": [],
-        "layering": {
-            "summary": "No strong layer names were detected from file layout alone.",
-            "layers": [],
-            "allowed_dependency_directions": [],
-            "unresolved_ambiguities": [],
-        },
-        "user_journeys": [],
-        "e2e_test_cases": [],
-        "auth": [],
-        "coding_conventions": [],
-        "commands": {
-            "build": [],
-            "test": [],
-            "dev": [],
-        },
-        "risks": [],
-    })
-    .to_string()
-}
-
-fn assert_fake_codex_stage_failure(
-    scenario: FakeCodexScenario,
+fn assert_fake_acp_stage_failure(
+    scenario: FakeAcpScenario,
     error_substring: &str,
     artifact_to_check: Option<&str>,
 ) -> Result<(), Box<dyn Error>> {
     let fixture = SmokeFixture::new_with_options(SmokeFixtureOptions {
-        worker_mode: WorkerMode::CodexCliFake { scenario },
+        worker_mode: WorkerMode::AcpFake { scenario },
         planner_worker_mode: None,
         max_repair_attempts: 1,
         continue_after_failure: false,

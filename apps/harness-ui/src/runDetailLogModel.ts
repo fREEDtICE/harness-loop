@@ -65,6 +65,82 @@ export function applyStageLogStreamChunk(
   return concatBytes(previous, chunk.bytes);
 }
 
+export type StageLogStreamEvent = { data: string };
+
+export type StageLogEventSource = {
+  addEventListener(
+    eventName: "snapshot" | "append",
+    listener: (event: StageLogStreamEvent) => void,
+  ): void;
+  close(): void;
+  onerror: ((...args: any[]) => unknown) | null;
+  readyState: number;
+};
+
+export type StageLogStreamSubscription = {
+  loadStreamUrl: () => Promise<string>;
+  createEventSource: (url: string) => StageLogEventSource;
+  readFromDisk: () => void;
+  getCurrentBytes: () => Uint8Array;
+  setBytes: (bytes: Uint8Array) => void;
+};
+
+const EVENT_SOURCE_CLOSED = 2;
+
+export function subscribeToStageLogStream(
+  subscription: StageLogStreamSubscription,
+): () => void {
+  let cancelled = false;
+  let source: StageLogEventSource | null = null;
+
+  const handleChunk =
+    (eventName: "snapshot" | "append") => (event: StageLogStreamEvent) => {
+      if (cancelled) {
+        return;
+      }
+
+      const nextBytes = applyStageLogStreamChunk(
+        subscription.getCurrentBytes(),
+        eventName,
+        event.data,
+      );
+
+      if (nextBytes === null) {
+        subscription.readFromDisk();
+        return;
+      }
+
+      subscription.setBytes(nextBytes);
+    };
+
+  subscription.loadStreamUrl().then(
+    (url) => {
+      if (cancelled) {
+        return;
+      }
+
+      source = subscription.createEventSource(url);
+      source.addEventListener("snapshot", handleChunk("snapshot"));
+      source.addEventListener("append", handleChunk("append"));
+      source.onerror = () => {
+        if (!cancelled && source?.readyState === EVENT_SOURCE_CLOSED) {
+          subscription.readFromDisk();
+        }
+      };
+    },
+    () => {
+      if (!cancelled) {
+        subscription.readFromDisk();
+      }
+    },
+  );
+
+  return () => {
+    cancelled = true;
+    source?.close();
+  };
+}
+
 function parseStageLogStreamChunk(
   rawData: string,
 ): { byte_offset: number; bytes: Uint8Array } | null {

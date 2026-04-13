@@ -17,14 +17,11 @@ session_prefix = "simulated"
 # Optional planner-stage override.
 # This is useful when you want real Codex planning but deterministic local build/evaluate stages.
 # [worker.planner]
-# kind = "codex_cli"
+# kind = "acp"
 #
-# [worker.planner.codex]
-# binary = "codex"
-# model = "gpt-5.4"
-# sandbox = "workspace-write"
-# full_auto = true
-# skip_git_repo_check = true
+# [worker.planner.acp]
+# command = ["codex"]
+# agent_name = "codex"
 # resume_sessions = true
 
 [prompts]

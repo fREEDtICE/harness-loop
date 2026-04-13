@@ -1,16 +1,18 @@
 [package]
-name = "loopsmith-worker-gemini"
+name = "loopsmith-acp"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+agent-client-protocol = { version = "0.10.4", features = ["unstable"] }
 anyhow.workspace = true
 async-trait.workspace = true
 libc = "0.2"
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+tokio-util = { version = "0.7", features = ["compat"] }
 tracing.workspace = true
 uuid.workspace = true
 loopsmith-core = { path = "../harness-core" }

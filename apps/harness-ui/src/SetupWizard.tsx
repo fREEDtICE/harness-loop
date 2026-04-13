@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { readError } from "./utils";
 
-type WorkerKind = "codex_cli" | "claude_cli" | "gemini_cli";
+type WorkerKind = "acp";
 
 interface ToolStatus {
   kind: "Found";
@@ -38,33 +38,6 @@ interface SetupWizardProps {
   onCancel?: () => void;
 }
 
-const MODELS: Record<WorkerKind, { value: string; label: string }[]> = {
-  codex_cli: [
-    { value: "gpt-5.4", label: "gpt-5.4" },
-    { value: "gpt-5.4-mini", label: "gpt-5.4-mini" },
-    { value: "gpt-5.3-codex", label: "gpt-5.3-codex" },
-    { value: "gpt-5.2-codex", label: "gpt-5.2-codex" },
-    { value: "gpt-5.2", label: "gpt-5.2" },
-    { value: "gpt-5.1-codex-max", label: "gpt-5.1-codex-max" },
-    { value: "gpt-5.1-codex-mini", label: "gpt-5.1-codex-mini" },
-  ],
-  claude_cli: [
-    { value: "claude-sonnet-4-20250514", label: "claude-sonnet-4-20250514" },
-    { value: "claude-opus-4-20250514", label: "claude-opus-4-20250514" },
-    { value: "claude-sonnet-4.5-20250514", label: "claude-sonnet-4.5-20250514" },
-  ],
-  gemini_cli: [
-    { value: "gemini-2.5-pro", label: "gemini-2.5-pro" },
-    { value: "gemini-2.5-flash", label: "gemini-2.5-flash" },
-  ],
-};
-
-const DEFAULT_BINARIES: Record<WorkerKind, string> = {
-  codex_cli: "codex",
-  claude_cli: "claude",
-  gemini_cli: "gemini",
-};
-
 const SCAN_STEP_KEYS = [
   "setup.scanSteps.detectShellEnvironment",
   "setup.scanSteps.detectNode",
@@ -74,19 +47,21 @@ const SCAN_STEP_KEYS = [
   "setup.scanSteps.resolveVersions",
 ] as const;
 
-function toolKindForName(name: string): WorkerKind | null {
-  if (name === "codex_cli") return "codex_cli";
-  if (name === "claude_cli") return "claude_cli";
-  if (name === "gemini_cli") return "gemini_cli";
-  return null;
+const ACP_AGENT_NAMES: Record<string, string> = {
+  codex_cli: "codex",
+  claude_cli: "claude",
+  gemini_cli: "gemini",
+};
+
+function toolKindForName(name: string): string | null {
+  return ACP_AGENT_NAMES[name] ?? null;
 }
 
 export default function SetupWizard({ onComplete, onCancel }: SetupWizardProps) {
   const { t } = useTranslation();
   const [report, setReport] = useState<EnvironmentReport | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [selectedKind, setSelectedKind] = useState<WorkerKind>("codex_cli");
-  const [selectedModel, setSelectedModel] = useState<string>(MODELS.codex_cli[0].value);
+  const [selectedAgent, setSelectedAgent] = useState<string>("codex");
   const [saving, setSaving] = useState(false);
   const [scanStep, setScanStep] = useState(0);
   const [scanDone, setScanDone] = useState(false);
@@ -120,10 +95,9 @@ export default function SetupWizard({ onComplete, onCancel }: SetupWizardProps) 
 
       const firstFound = env.tools.find((tp) => tp.status.kind === "Found");
       if (firstFound) {
-        const kind = toolKindForName(firstFound.name);
-        if (kind) {
-          setSelectedKind(kind);
-          setSelectedModel(MODELS[kind][0].value);
+        const agent = toolKindForName(firstFound.name);
+        if (agent) {
+          setSelectedAgent(agent);
         }
       }
     } catch (err) {
@@ -131,19 +105,14 @@ export default function SetupWizard({ onComplete, onCancel }: SetupWizardProps) 
     }
   }
 
-  function handleKindChange(kind: WorkerKind) {
-    setSelectedKind(kind);
-    setSelectedModel(MODELS[kind][0].value);
-  }
-
   function selectedToolProbe(): ToolProbe | undefined {
-    return report?.tools.find((tp) => tp.name === selectedKind);
+    return report?.tools.find((tp) => toolKindForName(tp.name) === selectedAgent);
   }
 
   function selectedBinary(): string {
     const probe = selectedToolProbe();
     if (probe?.status.kind === "Found") return probe.status.path;
-    return DEFAULT_BINARIES[selectedKind];
+    return selectedAgent;
   }
 
   function warnings(): string[] {
@@ -155,7 +124,7 @@ export default function SetupWizard({ onComplete, onCancel }: SetupWizardProps) 
       result.push(...probe.status.warnings);
     }
     if (
-      selectedKind === "codex_cli" &&
+      selectedAgent === "codex" &&
       report?.node.status.kind === "NotFound"
     ) {
       result.push(t("setup.nodeNotFound"));
@@ -167,9 +136,9 @@ export default function SetupWizard({ onComplete, onCancel }: SetupWizardProps) 
     setSaving(true);
     try {
       await invoke("save_setup_config", {
-        kind: selectedKind,
+        kind: "acp" as WorkerKind,
         binary: selectedBinary(),
-        model: selectedModel,
+        agentName: selectedAgent,
       });
       onComplete();
     } catch (err) {
@@ -284,22 +253,22 @@ export default function SetupWizard({ onComplete, onCancel }: SetupWizardProps) 
               <div className="landing-card setup-section">
                 <div className="setup-section-title">{t("setup.selectTool")}</div>
                 <div className="setup-radio-group">
-                  {(["codex_cli", "claude_cli", "gemini_cli"] as WorkerKind[]).map((kind) => {
-                    const probe = report.tools.find((tp) => tp.name === kind);
+                  {Object.entries(ACP_AGENT_NAMES).map(([probeName, agentName]) => {
+                    const probe = report.tools.find((tp) => tp.name === probeName);
                     return (
                       <label
-                        key={kind}
-                        className={`setup-radio-item ${selectedKind === kind ? "selected" : ""}`}
+                        key={agentName}
+                        className={`setup-radio-item ${selectedAgent === agentName ? "selected" : ""}`}
                       >
                         <input
                           type="radio"
                           name="setup-tool"
-                          value={kind}
-                          checked={selectedKind === kind}
-                          onChange={() => handleKindChange(kind)}
+                          value={agentName}
+                          checked={selectedAgent === agentName}
+                          onChange={() => setSelectedAgent(agentName)}
                         />
                         <span className="setup-radio-label">
-                          {probe?.display_name ?? kind}
+                          {probe?.display_name ?? agentName}
                         </span>
                         {probe?.status.kind === "Found" && (
                           <span className="setup-radio-status found">✓</span>
@@ -311,19 +280,6 @@ export default function SetupWizard({ onComplete, onCancel }: SetupWizardProps) 
                     );
                   })}
                 </div>
-              </div>
-
-              <div className="landing-card setup-section">
-                <div className="setup-section-title">{t("setup.selectModel")}</div>
-                <select
-                  className="setup-model-select"
-                  value={selectedModel}
-                  onChange={(e) => setSelectedModel(e.target.value)}
-                >
-                  {MODELS[selectedKind].map((m) => (
-                    <option key={m.value} value={m.value}>{m.label}</option>
-                  ))}
-                </select>
               </div>
 
               {currentWarnings.length > 0 && (
